@@ -1,0 +1,17 @@
+[remap]
+
+importer="com.timothyqiu.gdfxr.importer"
+type="AudioStreamWAV"
+uid="uid://bo5l40ui82gl5"
+path="res://.godot/imported/enchant.sfxr-32a0f9f5e0b2a01c788d72c835040887.sample"
+
+[deps]
+
+source_file="res://sound/enchant.sfxr"
+dest_files=["res://.godot/imported/enchant.sfxr-32a0f9f5e0b2a01c788d72c835040887.sample"]
+
+[params]
+
+loop=false
+bit_depth=0
+sample_rate=0

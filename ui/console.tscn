@@ -1,0 +1,42 @@
+[gd_scene format=3 uid="uid://b0ryak6htur1m"]
+
+[ext_resource type="Shader" uid="uid://clnnjl5fd1qg8" path="res://shaders/chromatic_aberration_2d.gdshader" id="1_lqavu"]
+[ext_resource type="Script" uid="uid://bgdnqcwv4xktv" path="res://ui/message_log.gd" id="message_log_script"]
+[ext_resource type="Script" uid="uid://dx7ld8ccs4u6x" path="res://ui/console.gd" id="script"]
+[ext_resource type="Script" uid="uid://bvr8poyykevjg" path="res://ui/sound_player.gd" id="sound_player_script"]
+[ext_resource type="Script" uid="uid://deqfvgautv6wn" path="res://ui/status_panel.gd" id="status_panel_script"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_tkpwu"]
+shader = ExtResource("1_lqavu")
+shader_parameter/intensity = 0.030000001425
+
+[node name="Console" type="Control" unique_id=820879032]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 1
+script = ExtResource("script")
+
+[node name="ChromaticAberration" type="ColorRect" parent="." unique_id=1293860048]
+material = SubResource("ShaderMaterial_tkpwu")
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="MessageLog" type="Node" parent="." unique_id=390606971]
+script = ExtResource("message_log_script")
+
+[node name="SoundPlayer" type="Node" parent="." unique_id=281057990]
+script = ExtResource("sound_player_script")
+
+[node name="StatusPanel" type="Node" parent="." unique_id=1076767512]
+script = ExtResource("status_panel_script")
+
+[connection signal="gui_input" from="." to="." method="_on_gui_input"]

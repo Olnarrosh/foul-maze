@@ -1,0 +1,17 @@
+[remap]
+
+importer="com.timothyqiu.gdfxr.importer"
+type="AudioStreamWAV"
+uid="uid://sxwhel76ejo0"
+path="res://.godot/imported/grenade_e.sfxr-79ff6eea8e15f7af4a5d31b15b207287.sample"
+
+[deps]
+
+source_file="res://sound/grenade_e.sfxr"
+dest_files=["res://.godot/imported/grenade_e.sfxr-79ff6eea8e15f7af4a5d31b15b207287.sample"]
+
+[params]
+
+loop=false
+bit_depth=0
+sample_rate=0

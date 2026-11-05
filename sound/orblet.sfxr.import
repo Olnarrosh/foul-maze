@@ -1,0 +1,17 @@
+[remap]
+
+importer="com.timothyqiu.gdfxr.importer"
+type="AudioStreamWAV"
+uid="uid://dls0s5dp2px2p"
+path="res://.godot/imported/orblet.sfxr-8ba9910d56b1b59fc1ecb7a5fc903dbf.sample"
+
+[deps]
+
+source_file="res://sound/orblet.sfxr"
+dest_files=["res://.godot/imported/orblet.sfxr-8ba9910d56b1b59fc1ecb7a5fc903dbf.sample"]
+
+[params]
+
+loop=false
+bit_depth=0
+sample_rate=0
