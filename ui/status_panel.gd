@@ -1,5 +1,5 @@
 class_name StatusPanel
-extends Node
+extends Control
 
 ## Right-hand panel of the console. Shows either the status page (race, stats, health,
 ## status effects, commands) or the inventory page, depending on Map.show_inventory.
@@ -12,16 +12,12 @@ extends Node
 ## The Map whose state is displayed. Set by Console whenever the active map changes.
 var map: Map
 
-var _cached_source_text: String = ""
-var _cached_lines: PackedStringArray = PackedStringArray()
-var _cached_width: int = -1
-var _cached_height: int = -1
+var font: Font
+var cursor_pos: Vector2
 
 ## Sets the map this panel displays, or null to show nothing.
 func bind_map(next_map: Map) -> void:
 	map = next_map
-	_cached_source_text = ""
-	_cached_lines = PackedStringArray()
 
 ## Returns the panel rows for a panel of the given size, including box-drawing borders.
 ## Row 0 is the top border and the second-to-last row is the bottom border.
@@ -30,11 +26,6 @@ func get_panel_lines(panel_width: int, panel_height: int) -> PackedStringArray:
 	if map == null:
 		return PackedStringArray()
 	var text: String = build_inventory_text(map) if map.show_inventory else build_status_text(map)
-	if text == _cached_source_text and panel_width == _cached_width and panel_height == _cached_height and not _cached_lines.is_empty():
-		return _cached_lines
-	_cached_source_text = text
-	_cached_width = panel_width
-	_cached_height = panel_height
 	var border_str: String = "═".repeat(panel_width - 2)
 	var content_lines: PackedStringArray = text.split("\n")
 	content_lines.resize(panel_height)
@@ -42,8 +33,7 @@ func get_panel_lines(panel_width: int, panel_height: int) -> PackedStringArray:
 		content_lines[row] = "║" + content_lines[row].rpad(panel_width - 2) + "║"
 	content_lines.insert(0, "╔" + border_str + "╗")
 	content_lines[content_lines.size() - 2] = "╚" + border_str + "╝"
-	_cached_lines = content_lines
-	return _cached_lines
+	return content_lines
 
 ## Returns the letter used to select an inventory slot: a-z, then the following characters for slots 26 and up.
 static func inventory_letter(inventory_index: int) -> String:
@@ -66,7 +56,7 @@ static func inventory_item_label(source: Map, item_data: Item) -> String:
 static func build_inventory_text(source: Map) -> String:
 	var lines: Array[String] = ["You are equipped with:"]
 	var sel_mode: bool = source.inspect_item_selection_active or source.equip_selection_active or source.drop_selection_active or source.throw_item_selection_active or source.activate_item_selection_active
-	var inventory: Array = source.inventory
+	var inventory: Array = PlayerData.inventory
 	if PlayerData.equipped_weapon >= 0 and PlayerData.equipped_weapon < inventory.size():
 		var weapon_letter: String = inventory_letter(PlayerData.equipped_weapon)
 		var weapon_name: String = inventory[PlayerData.equipped_weapon].get_item_name()
@@ -125,10 +115,16 @@ static func _unidentified_equipped_ego_bonus(item_info: Item, ego_name: String) 
 		return 0
 	return item_info.enchantment
 
+func set_cursor_pos(pos: Vector2) -> void:
+	if (pos.x >= 0 and pos.y >= 0) or (cursor_pos.x >= 0 and cursor_pos.y >= 0):
+		queue_redraw()
+	if pos != cursor_pos:
+		cursor_pos = pos
+
 ## Builds the status page: race, level, attributes, derived combat values, status effects, and the command help.
 static func build_status_text(source: Map) -> String:
 	var p: Creature = source._player_entity
-	var inventory: Array = source.inventory
+	var inventory := PlayerData.inventory
 	var race_string: String
 	match PlayerData.player_race:
 		PlayerData.Race.BEASTMAN:
@@ -182,8 +178,8 @@ static func build_status_text(source: Map) -> String:
 		"Evasion: %d (%d%%)" % [displayed_evasion, 100 - pow(.933033, displayed_evasion) * 100],
 		"Accuracy (melee): %d%%" % displayed_accuracy,
 		"Accuracy (thrown): %d%%" % p.acc_thrown,
-		"Movement speed: %d%%" % (10000 / (displayed_move_speed * 5)),
-		"Attack speed: %d%%" % (10000 / (displayed_attack_speed * 5)),
+		"Movement speed: %d%%" % (2000 / displayed_move_speed),
+		"Attack speed: %d%%" % (2000 / displayed_attack_speed),
 		"Status effects:"]
 	if p.status.size() > 0:
 		for s in p.status:
@@ -200,3 +196,37 @@ static func build_status_text(source: Map) -> String:
 	lines[37] = "(R) Rest"
 	lines[33] = "(I) Open inventory"
 	return "\n".join(lines)
+	
+func _draw() -> void:
+	var panel_x: int = 120
+	var panel_y: int = 0
+	var panel_w: int = 40
+	var panel_h: int = 40
+	var cell_w := 10
+	var cell_h := 18
+
+	# Background (draw_rect uses pixel coordinates)
+	draw_rect(Rect2(Vector2(panel_x * cell_w, panel_y * cell_h), Vector2(panel_w * cell_w, panel_h * cell_h)), Console.CGA_COLORS[4], true)
+
+	# Content strings and their padded rows are cached by StatusPanel and rebuilt only when the panel model changes.
+	var panel_rows: PackedStringArray = get_panel_lines(panel_w, panel_h)
+	if panel_rows.is_empty():
+		return
+
+	# Draw panel glyphs only. Blank panel cells need neither a text call nor
+	# individual background rectangles because the panel background is solid.
+	for y: int in range(panel_h):
+		var line: String = panel_rows[y]
+		var baseline: float = 18 * y + 14
+		draw_string(font, Vector2(panel_x * 10, baseline), line, HORIZONTAL_ALIGNMENT_CENTER, -1, 20, Console.CGA_COLORS[15])
+		for x: int in range(panel_w):
+			var character: String = line[x]
+			var is_cursor: bool = cursor_pos == Vector2(x, y)
+			var foreground: int = 15
+			var background: int = 4
+			if is_cursor:
+				foreground = Console.INV_COLORS[foreground]
+				background = Console.INV_COLORS[background]
+				draw_rect(Rect2(Vector2((panel_x + x) * 10, float(y) * cell_h), Vector2(cell_w, cell_h)), Console.CGA_COLORS[background], true)
+				if character != " ":
+					draw_string(font, Vector2((panel_x + x) * 10, baseline), character, HORIZONTAL_ALIGNMENT_CENTER, -1, 20, Console.CGA_COLORS[foreground])

@@ -70,7 +70,7 @@ static func get_description(creature: Creature, player: PlayerCreature) -> Strin
 	var player_weapon: Weapon
 	var weapon_ego: String = ""
 	var weapon_enchantment: int = 0
-	var player_inventory: Array = player.inventory
+	var player_inventory: Array = PlayerData.inventory
 	var weapon_index: int = PlayerData.equipped_weapon
 	if weapon_index >= 0 and weapon_index < player_inventory.size():
 		player_weapon = player_inventory[weapon_index] as Weapon
@@ -95,9 +95,9 @@ static func get_description(creature: Creature, player: PlayerCreature) -> Strin
 	var creature_hit_probability: float = _hit_probability(creature.accuracy, player_evasion, player_helpless)
 	var player_hits_to_kill: String = _format_attack_estimate(creature.health, player_damage, creature_armor, player_hit_probability)
 	var creature_hits_to_kill_player: String = _format_attack_estimate(player.health, creature.damage, player_armor, creature_hit_probability)
-	description += " You do %.1f damage to it with an average attack, and need about %s attacks to kill it." % [player_hit_probability * player_damage, player_hits_to_kill]
-	description += " It does %.1f damage to you with an average attack, and would need about %s attacks to kill you." % [creature_hit_probability * creature.damage, creature_hits_to_kill_player]
-	description += " " + _active_status_description(creature)
+	description += "\nYou do %.1f damage to it with an average attack, and need about %s attacks to kill it." % [player_hit_probability * player_damage, player_hits_to_kill]
+	description += "\nIt does %.1f damage to you with an average attack, and would need about %s attacks to kill you." % [creature_hit_probability * creature.damage, creature_hits_to_kill_player]
+	description += "\n" + _active_status_description(creature)
 	return description
 
 static func _hit_probability(accuracy: int, evasion: int, helpless: bool = false) -> float:

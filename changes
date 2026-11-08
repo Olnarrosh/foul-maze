@@ -1,0 +1,6 @@
+0.1.1
+- The line between the player character and the tile the cursor is over is now displayed correctly.
+- The types of altars are now differentiated not only by their colors but also their glyphs.
+- Throwing an item or activating a wand now needs a clear line to the target.
+- Enemies treat all tiles as previously seen.
+- Geysers should no longer spawn in places where they block passages.

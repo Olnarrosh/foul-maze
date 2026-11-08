@@ -1,3 +1,4 @@
+class_name Console
 extends Control
 
 ## Reference to the Map node
@@ -6,8 +7,11 @@ var map: Map
 @onready var message_log: MessageLog = $MessageLog
 @onready var sound_player: SoundPlayer = $SoundPlayer
 @onready var status_panel: StatusPanel = $StatusPanel
+
+var chroma: PackedScene = preload("res://shaders/chromatic_aberration.tscn")
 var race_selection_active: bool = true
 var license_screen_active: bool = false
+var _inspect_mode_previous: bool = false
 var license_text: String = ""
 var game_over_active: bool = false
 var game_over_victory: bool = false
@@ -66,7 +70,7 @@ var _cursor_drawn: bool = false
 var cursor_pos: Vector2i = Vector2i(-1, -1)
 
 ## Font reference
-var font: FontFile = preload("res://FSEX300.ttf")
+var font: Font = preload("res://FSEX300.ttf")
 var font_size: int = 12
 var ascent: float = font.get_ascent(font_size)
 var descent: float = font.get_descent(font_size)
@@ -82,7 +86,12 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_PASS
 	_update_cell_size()
 	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
-	$ChromaticAberration.visible = chromatic_aberration
+	if chromatic_aberration:
+		add_child(chroma.instantiate())
+	message_log.font = font
+	message_log.cursor_pos = Vector2(-1, -1)
+	status_panel.font = font
+	message_log.cursor_pos = Vector2(-1, -1)
 	queue_redraw()
 	_start_background_map_generation.call_deferred()
 
@@ -98,7 +107,9 @@ func _create_map() -> void:
 	map = Map.new(1, Map.Biome.CAVE)
 	add_child(map)
 	map.map_changed.connect(_on_map_changed)
-	map.redraw.connect(_on_map_redraw)
+	map.redraw.connect(queue_redraw)
+	map.redraw_status.connect(status_panel.queue_redraw)
+	map.inspect_changed.connect(_on_inspect)
 	map.player_died.connect(_on_player_died)
 	map.player_won.connect(_on_player_won)
 	_bind_map_services(map)
@@ -110,7 +121,7 @@ func _bind_map_services(target: Map) -> void:
 		target.message_posted.connect(message_log.add_message)
 	if not target.sound_requested.is_connected(sound_player.play):
 		target.sound_requested.connect(sound_player.play)
-	status_panel.bind_map(target)
+	status_panel.map = target
 
 func _unhandled_input(event: InputEvent) -> void:
 	if game_over_active:
@@ -209,7 +220,7 @@ func _draw() -> void:
 
 	# Clear all uncovered areas once. The map pass below only paints non-black
 	# runs, rather than one rectangle for each of the 8,000 console cells.
-	draw_rect(Rect2(Vector2.ZERO, size), CGA_COLORS[0], true)
+	draw_rect(Rect2(Vector2.ZERO, Vector2(CONSOLE_W * _cell_w, (VIEW_H + 2) * _cell_h)), CGA_COLORS[0], true)
 
 	for y: int in range(VIEW_H):
 		for x: int in range(VIEW_W):
@@ -231,7 +242,7 @@ func _draw() -> void:
 				var swapped_color: int = foreground
 				foreground = background
 				background = swapped_color
-			if cursor_in_view and cursor_pos == map_position:
+			elif cursor_in_view and cursor_pos == map_position:
 				foreground = INV_COLORS[foreground]
 				background = INV_COLORS[background]
 				_cursor_drawn = true
@@ -273,12 +284,8 @@ func _draw() -> void:
 	if cursor_pos.x >= VIEW_X and cursor_pos.x < VIEW_X + VIEW_W and cursor_pos.y >= VIEW_Y and cursor_pos.y < VIEW_Y + VIEW_H:
 		var hover_text: String = map.get_hover_text(cursor_pos.x, cursor_pos.y)
 		_draw_text_field(hover_text, 40, 1, Color.WHITE)
-	var lower_field_text: String = map.inspect_description if map.inspect_mode else message_log.get_text()
-	_draw_text_field(lower_field_text, 42, CONSOLE_H - 42, Color.WHITE, not map.inspect_mode)
 
-	_draw_panel()
 	_draw_uncovered_cursor()
-
 
 func _draw_game_over() -> void:
 	var panel_width: int = 58
@@ -305,11 +312,9 @@ func _draw_game_over() -> void:
 	_draw_menu_line("║" + " ".repeat(panel_width - 2) + "║", panel_x, panel_y + 9, CGA_COLORS[15])
 	_draw_menu_line("╚" + border + "╝", panel_x, panel_y + panel_height - 1, CGA_COLORS[15])
 
-
 func _game_over_stat_line(label: String, value: int, width: int) -> String:
 	var content: String = "  %s %d" % [label, value]
 	return "║" + content + " ".repeat(maxi(0, width - 2 - content.length())) + "║"
-
 
 func _draw_race_menu() -> void:
 	var panel_width: int = 48
@@ -335,8 +340,7 @@ func _draw_race_menu() -> void:
 		_draw_menu_line(suffix + " ".repeat(maxi(0, padding_count)) + "║", panel_x + prefix.length() + 1, line_row, CGA_COLORS[15])
 	_draw_menu_line("║                                              ║", panel_x, panel_y + 14, CGA_COLORS[15])
 	_draw_menu_line("╚" + border + "╝", panel_x, panel_y + panel_height - 1, CGA_COLORS[15])
-	#var version = Engine.get_version_info()
-	_draw_menu_line("Foul Maze v0.1", 0, CONSOLE_H - 6, CGA_COLORS[8])
+	_draw_menu_line("Foul Maze v0.1.1", 0, CONSOLE_H - 6, CGA_COLORS[8])
 	_draw_menu_line("made in MMXXVI", 0, CONSOLE_H - 5, CGA_COLORS[8])
 	_draw_menu_line("github.com/Olnarrosh/foul-maze", 0, CONSOLE_H - 4, CGA_COLORS[8])
 	_draw_menu_line("Made with: Godot (licensed under the MIT (L)icense)", 0, CONSOLE_H - 3, CGA_COLORS[8])
@@ -354,7 +358,6 @@ func _draw_license_screen() -> void:
 		_draw_menu_line(license_lines[first_line + line_index], license_panel_x + 2, first_row + line_index, CGA_COLORS[15])
 	_draw_menu_line("Press any key to return", license_panel_x + 2, CONSOLE_H - 2, CGA_COLORS[8])
 
-
 func _wrap_text_to_cells(text: String, max_characters: int) -> PackedStringArray:
 	var wrapped_lines: PackedStringArray = PackedStringArray()
 	for paragraph: String in text.split("\n"):
@@ -371,14 +374,12 @@ func _wrap_text_to_cells(text: String, max_characters: int) -> PackedStringArray
 		wrapped_lines.append(remaining)
 	return wrapped_lines
 
-
 func _draw_menu_line(text: String, cell_x: int, cell_y: int, color: Color) -> void:
 	var foreground_index: int = _palette_index_for_color(color)
 	for character_index: int in range(text.length()):
 		var character_position: Vector2i = Vector2i(cell_x + character_index, cell_y)
 		var background_index: int = _menu_background_index_at(character_position)
 		_draw_console_character(text.substr(character_index, 1), character_position.x, character_position.y, foreground_index, background_index)
-
 
 func _palette_index_for_color(color: Color) -> int:
 	var best_index: int = 0
@@ -394,7 +395,6 @@ func _palette_index_for_color(color: Color) -> int:
 			best_index = color_index
 	return best_index
 
-
 func _menu_background_index_at(cell: Vector2i) -> int:
 	if license_screen_active:
 		return 0
@@ -408,7 +408,6 @@ func _menu_background_index_at(cell: Vector2i) -> int:
 		return 4
 	return 0
 
-
 func _draw_console_character(character: String, cell_x: int, cell_y: int, foreground_index: int, background_index: int) -> void:
 	var is_cursor: bool = cursor_pos == Vector2i(cell_x, cell_y)
 	var draw_background: int = INV_COLORS[background_index] if is_cursor else background_index
@@ -420,7 +419,6 @@ func _draw_console_character(character: String, cell_x: int, cell_y: int, foregr
 		return
 	var baseline: float = float(cell_y) * _cell_h + (_cell_h + ascent - descent) / 2.0
 	draw_string(font, Vector2(float(cell_x) * _cell_w, baseline), character, HORIZONTAL_ALIGNMENT_LEFT, _cell_w, font_size, CGA_COLORS[draw_foreground])
-
 
 func _draw_uncovered_cursor() -> void:
 	if _cursor_drawn or cursor_pos.x < 0 or cursor_pos.x >= CONSOLE_W or cursor_pos.y < 0 or cursor_pos.y >= CONSOLE_H:
@@ -434,10 +432,9 @@ func _draw_uncovered_cursor() -> void:
 	draw_rect(cursor_rect, CGA_COLORS[cursor_background], true)
 	var cursor_character: String = _console_character_at(cursor_pos)
 	if not cursor_character.is_empty() and cursor_character != " ":
-		var baseline: float = float(cursor_pos.y) * _cell_h + (_cell_h + ascent - descent) / 2.0
+		var baseline: float = cursor_pos.y * _cell_h + (_cell_h + ascent - descent) / 2.0
 		draw_string(font, Vector2(float(cursor_pos.x) * _cell_w, baseline), cursor_character, HORIZONTAL_ALIGNMENT_LEFT, _cell_w, font_size, CGA_COLORS[INV_COLORS[cursor_foreground]])
 	_cursor_drawn = true
-
 
 func _default_console_cell_foreground(cell: Vector2i) -> int:
 	if race_selection_active:
@@ -454,7 +451,6 @@ func _default_console_cell_foreground(cell: Vector2i) -> int:
 		return 15
 	return 7
 
-
 func _console_character_at(cell: Vector2i) -> String:
 	if game_over_active:
 		return _game_over_character_at(cell)
@@ -464,28 +460,23 @@ func _console_character_at(cell: Vector2i) -> String:
 		return _race_menu_character_at(cell)
 	if map == null:
 		return ""
-	if cell.y == 40 and cell.x < VIEW_W and cursor_pos.x >= VIEW_X and cursor_pos.x < VIEW_X + VIEW_W and cursor_pos.y >= VIEW_Y and cursor_pos.y < VIEW_Y + VIEW_H:
-		var hover_text: String = map.get_hover_text(cursor_pos.x, cursor_pos.y)
-		return hover_text.substr(cell.x, 1) if cell.x < hover_text.length() else " "
-	if cell.y == 41:
+	# Hovering over the hover text line produces no text, so assume it's empty when under the cursor
+	if cell.y == 40 or cell.y == 41:
 		return ""
 	if cell.y >= 42:
-		var align_to_bottom: bool = not map.inspect_mode
-		var text: String = map.inspect_description if map.inspect_mode else message_log.get_text()
+		var text: String = message_log.get_text()
 		if text.is_empty():
 			return ""
 		var row_count: int = CONSOLE_H - 42
 		var wrapped_lines: PackedStringArray = _wrap_text_field_lines(text)
 		var visible_start: int = maxi(0, wrapped_lines.size() - row_count)
 		var visible_line_count: int = mini(row_count, wrapped_lines.size())
-		var first_row: int = 42 + (row_count - visible_line_count if align_to_bottom else 0)
-		var visible_row_index: int = cell.y - first_row
+		var visible_row_index: int = cell.y - 42
 		if visible_row_index >= 0 and visible_row_index < visible_line_count:
 			var line_index: int = visible_start + visible_row_index
 			if cell.x < wrapped_lines[line_index].length():
 				return wrapped_lines[line_index].substr(cell.x, 1)
 	return ""
-
 
 func _game_over_character_at(cell: Vector2i) -> String:
 	var panel_width: int = 58
@@ -514,12 +505,10 @@ func _game_over_character_at(cell: Vector2i) -> String:
 		return _padded_menu_text("Press Escape or Return to start again.", panel_width - 2).substr(cell.x - panel_x - 1, 1)
 	return " "
 
-
 func _padded_menu_text(text: String, width: int) -> String:
 	var padding: int = maxi(0, width - text.length())
 	var left_padding: int = floori(float(padding) / 2.0)
 	return " ".repeat(left_padding) + text + " ".repeat(padding - left_padding)
-
 
 func _race_menu_character_at(cell: Vector2i) -> String:
 	var panel_x: int = (CONSOLE_W - 48) >> 1
@@ -550,7 +539,6 @@ func _race_menu_character_at(cell: Vector2i) -> String:
 			return full_line.substr(cell.x - panel_x, 1)
 	return " "
 
-
 func _race_menu_foreground_at(cell: Vector2i) -> int:
 	for race_index: int in range(RACE_NAMES.size()):
 		if cell.y == RACE_MENU_FIRST_ROW + race_index * 2 and cell.x == ((CONSOLE_W - 48) >> 1) + 4:
@@ -558,8 +546,6 @@ func _race_menu_foreground_at(cell: Vector2i) -> int:
 	if cell.y == 17:
 		return 11
 	return 15
-
-
 
 func _on_player_died(highest_level: int, enemies_killed: int) -> void:
 	game_over_victory = false
@@ -574,8 +560,9 @@ func _show_game_over(highest_level: int, enemies_killed: int) -> void:
 	game_over_enemies_killed = enemies_killed
 	game_over_active = true
 	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+	message_log.visible = false
+	status_panel.visible = false
 	queue_redraw()
-
 
 func _return_to_race_selection() -> void:
 	game_over_active = false
@@ -590,11 +577,10 @@ func _return_to_race_selection() -> void:
 	status_panel.bind_map(null)
 	PlayerData.reset_run_stats()
 	ItemData.init_unid_names()
-	PlayerData.player_race = PlayerData.Race.GNOME
+	PlayerData.player_race = PlayerData.Race.ORC
 	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 	queue_redraw()
 	_start_background_map_generation.call_deferred()
-
 
 func _select_race(index: int) -> void:
 	if index < 0 or index >= RACE_VALUES.size() or not race_selection_active:
@@ -605,8 +591,9 @@ func _select_race(index: int) -> void:
 	if map == null:
 		_create_map()
 	map.start_game_after_generation()
+	message_log.visible = true
+	status_panel.visible = true
 	queue_redraw()
-
 
 func _wrap_text_field_lines(text: String) -> PackedStringArray:
 	var wrapped_lines: PackedStringArray = PackedStringArray()
@@ -620,7 +607,6 @@ func _wrap_text_field_lines(text: String) -> PackedStringArray:
 			remaining = remaining.substr(break_at).strip_edges()
 		wrapped_lines.append(remaining)
 	return wrapped_lines
-
 
 func _draw_text_field(text: String, start_row: int, row_count: int, color: Color, align_to_bottom: bool = false) -> void:
 	if text.is_empty() or row_count <= 0:
@@ -636,10 +622,8 @@ func _draw_text_field(text: String, start_row: int, row_count: int, color: Color
 		for character_index: int in range(line.length()):
 			_draw_console_character(line.substr(character_index, 1), character_index, row, foreground_index, 0)
 
-
 func _mouse_tile_position(local_position: Vector2) -> Vector2i:
 	return Vector2i(floori(local_position.x / _cell_w), floori(local_position.y / _cell_h))
-
 
 func _update_cursor_from_mouse(local_position: Vector2) -> void:
 	var mouse_position: Vector2i = Vector2i(
@@ -658,8 +642,9 @@ func _update_cursor_from_mouse(local_position: Vector2) -> void:
 				map.set_hover_tile(cursor_pos)
 		else:
 			map.set_hover_tile(Vector2i(-1, -1))
+		message_log.set_cursor_pos(Vector2i(cursor_pos.x, cursor_pos.y - 42))
+		status_panel.set_cursor_pos(Vector2i(cursor_pos.x - 120, cursor_pos.y))
 	queue_redraw()
-
 
 func _on_gui_input(event: InputEvent) -> void:
 	if _cell_w <= 0 or _cell_h <= 0:
@@ -707,90 +692,34 @@ func _on_gui_input(event: InputEvent) -> void:
 					map.start_auto_walk(clicked_tile)
 			accept_event()
 
-
-func _on_map_redraw() -> void:
-	queue_redraw()
+func _on_inspect() -> void:
+	# Check if inspect_mode changed and update override message
+	var current_inspect: bool = map.inspect_mode
+	if current_inspect and not _inspect_mode_previous:
+		# Entering inspect mode - show the description
+		message_log.set_override_message(map.inspect_description)
+	elif not current_inspect and _inspect_mode_previous:
+		# Leaving inspect mode - clear the override message
+		message_log.set_override_message()
+	_inspect_mode_previous = current_inspect
 
 func _on_map_changed(next_map: Map) -> void:
-	if map != null and map.redraw.is_connected(_on_map_redraw):
-		map.redraw.disconnect(_on_map_redraw)
+	if map != null and map.redraw.is_connected(queue_redraw):
+		map.redraw.disconnect(queue_redraw)
+	if map != null and map.redraw_status.is_connected(status_panel.queue_redraw):
+		map.redraw.disconnect(status_panel.queue_redraw)
+	if map != null and map.inspect_changed.is_connected(_on_inspect):
+		map.redraw.disconnect(_on_inspect)
 	if map != null and map.map_changed.is_connected(_on_map_changed):
 		map.map_changed.disconnect(_on_map_changed)
 	map = next_map
-	if not map.redraw.is_connected(_on_map_redraw):
-		map.redraw.connect(_on_map_redraw)
+	if not map.redraw.is_connected(queue_redraw):
+		map.redraw.connect(queue_redraw)
 	if not map.map_changed.is_connected(_on_map_changed):
 		map.map_changed.connect(_on_map_changed)
+	if not map.redraw_status.is_connected(status_panel.queue_redraw):
+		map.redraw_status.connect(status_panel.queue_redraw)
+	if not map.inspect_changed.is_connected(_on_inspect):
+		map.inspect_changed.connect(_on_inspect)
 	_bind_map_services(map)
 	queue_redraw()
-
-
-func _draw_panel() -> void:
-	var panel_x: int = VIEW_W
-	var panel_y: int = 0
-	var panel_w: int = CONSOLE_W - VIEW_W
-	var panel_h: int = VIEW_H
-
-	# Background (draw_rect uses pixel coordinates)
-	draw_rect(Rect2(Vector2(panel_x * _cell_w, panel_y * _cell_h), Vector2(panel_w * _cell_w, panel_h * _cell_h)), CGA_COLORS[4], true)
-
-	# Panel borders are built by StatusPanel.get_panel_lines().
-
-	# Top and bottom horizontal borders
-	#var top_baseline: float = panel_y * _cell_h + (_cell_h + ascent - descent) / 2.0
-	#var bottom_baseline: float = (panel_y + panel_h - 1) * _cell_h + (_cell_h + ascent - descent) / 2.0
-	#draw_string(font, Vector2((panel_x + 1) * _cell_w, top_baseline), border_str, HORIZONTAL_ALIGNMENT_LEFT, panel_w * _cell_w, font_size, CGA_COLORS[15])
-	#draw_string(font, Vector2((panel_x + 1) * _cell_w, bottom_baseline), border_str, HORIZONTAL_ALIGNMENT_LEFT, panel_w * _cell_w, font_size, CGA_COLORS[15])
-#
-	## Left and right vertical borders
-	#for y in range(panel_y + 1, panel_y + panel_h - 1):
-		#var by: float = y * _cell_h + (_cell_h + ascent - descent) / 2.0
-		#draw_string(font, Vector2(panel_x * _cell_w, by), v_line, HORIZONTAL_ALIGNMENT_LEFT, _cell_w, font_size, CGA_COLORS[15])
-		#draw_string(font, Vector2((panel_x + panel_w - 1) * _cell_w, by), v_line, HORIZONTAL_ALIGNMENT_LEFT, _cell_w, font_size, CGA_COLORS[15])
-#
-	## Corners
-	#draw_string(font, Vector2(panel_x * _cell_w, top_baseline), tl, HORIZONTAL_ALIGNMENT_LEFT, _cell_w, font_size, CGA_COLORS[15])
-	#draw_string(font, Vector2((panel_x + panel_w - 1) * _cell_w, top_baseline), tr, HORIZONTAL_ALIGNMENT_LEFT, _cell_w, font_size, CGA_COLORS[15])
-	#draw_string(font, Vector2(panel_x * _cell_w, bottom_baseline), bl, HORIZONTAL_ALIGNMENT_LEFT, _cell_w, font_size, CGA_COLORS[15])
-	#draw_string(font, Vector2((panel_x + panel_w - 1) * _cell_w, bottom_baseline), br, HORIZONTAL_ALIGNMENT_LEFT, _cell_w, font_size, CGA_COLORS[15])
-
-	# Content strings and their padded rows are cached by StatusPanel and rebuilt only when the panel model changes.
-	var panel_rows: PackedStringArray = status_panel.get_panel_lines(panel_w, panel_h)
-	if panel_rows.is_empty():
-		return
-
-	# Draw panel glyphs only. Blank panel cells need neither a text call nor
-	# individual background rectangles because the panel background is solid.
-	for y: int in range(panel_h):
-		var line: String = panel_rows[y]
-		var baseline: float = _row_baselines[y]
-		for x: int in range(panel_w):
-			var character: String = line[x]
-			var is_cursor: bool = cursor_pos == Vector2i(panel_x + x, y)
-			var foreground: int = 15
-			var background: int = 4
-			if is_cursor:
-				foreground = INV_COLORS[foreground]
-				background = INV_COLORS[background]
-				draw_rect(Rect2(Vector2(_cell_x_positions[panel_x + x], float(y) * _cell_h), Vector2(_cell_w, _cell_h)), CGA_COLORS[background], true)
-				_cursor_drawn = true
-			if character == " ":
-				continue
-			draw_string(font, Vector2(_cell_x_positions[panel_x + x], baseline), character, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, CGA_COLORS[foreground])
-	
-	#draw_string(font, Vector2(panel_x * _cell_w, panel_y), "test", HORIZONTAL_ALIGNMENT_LEFT, panel_w * _cell_w, font_size, CGA_COLORS[15])
-	#draw_string(font, Vector2(panel_x * _cell_w, panel_y), tl + border_str + tr + "\n" + "\n".join(lines) + bl + border_str + br, HORIZONTAL_ALIGNMENT_LEFT, panel_w * _cell_w, font_size, CGA_COLORS[15])
-	#draw_string(font, Vector2((panel_x) * _cell_w, by), lines[i], HORIZONTAL_ALIGNMENT_LEFT, (panel_w) * _cell_w, font_size, CGA_COLORS[15])
-
-	# Invert colors at cursor position anywhere within the panel
-	#if cursor_pos.x >= panel_x and cursor_pos.x < panel_x + panel_w and cursor_pos.y >= panel_y and cursor_pos.y < panel_y + panel_h:
-		#var by: float = cursor_pos.y * _cell_h + (_cell_h + ascent - descent) / 2.0
-		#draw_rect(Rect2(Vector2(cursor_pos.x * _cell_w, cursor_pos.y * _cell_h), Vector2(_cell_w, _cell_h)), CGA_COLORS[INV_COLORS[4]], true)
-		#var cursor_col := cursor_pos.x - panel_x - 1
-		#var line_idx := cursor_pos.y - panel_y - 1
-		#var char_str := " "
-		#if line_idx < lines.size():
-			#var line := lines[line_idx]
-			#if cursor_col < line.length():
-				#char_str = line.substr(cursor_col, 1)
-		#draw_string(font, Vector2(cursor_pos.x * _cell_w, by), char_str, HORIZONTAL_ALIGNMENT_LEFT, _cell_w, font_size, CGA_COLORS[INV_COLORS[15]])

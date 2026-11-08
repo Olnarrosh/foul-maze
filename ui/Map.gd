@@ -45,11 +45,6 @@ var environment_next_tick: Dictionary = {"steam": ENV_TICK_INTERVAL["steam"], "s
 var creature: Dictionary[Vector2i, Creature] = {}
 var item: Dictionary[Vector2i, Item] = {}
 
-# copy of _player_entity.inventory; doesn't provide a lot of convenience anymore,
-# so folding them into one variable would make it easier to maintain
-var inventory: Array = []
-const MAX_INVENTORY: int = 26
-
 var show_inventory: bool = false
 var equip_selection_active: bool = false
 var activate_item_selection_active: bool = false
@@ -144,6 +139,8 @@ var _creature_population_initialized: bool = false
 
 # emitted whenever something on the screen changes
 signal redraw
+signal redraw_status
+signal inspect_changed
 signal map_changed(next_map: Map)
 signal player_died(highest_level: int, enemies_killed: int)
 signal player_won(highest_level: int, enemies_killed: int)
@@ -317,7 +314,52 @@ func _generate_level(defer_player_setup: bool = false) -> void:
 	if _biome in [Biome.SLIME, Biome.WATER, Biome.FOREST, Biome.WATER_AND_FOREST, Biome.FIRE, Biome.ICE]:
 		var biome_noise: FastNoiseLite = _create_biome_noise()
 		_apply_biome_terrain(biome_noise)
-	_place_altars()
+	
+	altar_types.clear()
+	altar_positions.clear()
+	if level < 1 or level > ALTAR_LEVEL_COUNT:
+		return
+	_ensure_altar_schedule()
+	if _altar_primary_schedule.has(level):
+		altar_types.append(int(_altar_primary_schedule[level]))
+	if _altar_extra_schedule.has(level):
+		altar_types.append(int(_altar_extra_schedule[level]))
+	var strict_candidates: Array[Vector2i] = []
+	var fallback_candidates: Array[Vector2i] = []
+	for y: int in range(1, MAP_H - 1):
+		for x: int in range(1, MAP_W - 1):
+			var position: Vector2i = Vector2i(x, y)
+			var tile_type: TerrainData.Terrain = grid[position]
+			# Skip dangerous terrain for altar placement
+			if not tile_type.passable or tile_type.dangerous or position == player_pos or position == stairs_up_pos or position == stairs_down_pos:
+				continue
+			if creature.has(position) or item.has(position):
+				continue
+			var has_impassable_neighbor: bool = false
+			for direction: Vector2i in StatusData.ADJACENT_DIRECTIONS:
+				var neighbor_type: TerrainData.Terrain = grid[position + direction]
+				if not neighbor_type.passable or neighbor_type.dangerous:
+					has_impassable_neighbor = true
+					break
+			if not has_impassable_neighbor:
+				strict_candidates.append(position)
+			fallback_candidates.append(position)
+	strict_candidates.shuffle()
+	fallback_candidates.shuffle()
+	var candidates: Array[Vector2i] = strict_candidates if strict_candidates.size() >= altar_types.size() else fallback_candidates
+	for altar_type: int in altar_types:
+		var selected_position: Vector2i = Vector2i(-1, -1)
+		while not candidates.is_empty():
+			var candidate_position: Vector2i = candidates.pop_back()
+			if altar_positions.has(candidate_position):
+				continue
+			selected_position = candidate_position
+			break
+		if selected_position.x < 0:
+			break
+		grid[selected_position] = TerrainData.get_terrain(altar_type)
+		altar_positions.append(selected_position)
+	
 	if level == 1:
 		if not defer_player_setup:
 			_init_player()
@@ -334,7 +376,7 @@ func _generate_level(defer_player_setup: bool = false) -> void:
 func _travel_via_stairs(stair_type: TerrainData.Terrain, move_cost: int) -> bool:
 	_prepare_environment_turn(_player_entity)
 	_player_entity.set_flag("_environment_turn_prepared")
-	if int(_player_entity.health) <= 0:
+	if _player_entity.health <= 0:
 		_player_entity.set_flag("_environment_turn_prepared", false)
 		return false
 	if stair_type.terrain_name == "stairs leading up" and level == 1:
@@ -380,12 +422,10 @@ func _offset_map_clock(time_offset: int) -> void:
 	if is_zero_approx(time_offset):
 		return
 	environment_time += time_offset
-	for kind_value: Variant in environment_next_tick.keys():
-		var kind: String = str(kind_value)
+	for kind: String in environment_next_tick.keys():
 		environment_next_tick[kind] = float(environment_next_tick[kind]) + time_offset
 	next_respawn_time += time_offset
-	for entity_value: Variant in creature.values():
-		var entity: Creature = entity_value
+	for entity: Creature in creature.values():
 		if entity is PlayerCreature:
 			continue
 		entity.time = entity.time + time_offset
@@ -403,9 +443,7 @@ func _switch_to_map(destination: Map, destination_pos: Vector2i, move_cost: int)
 	var run_root: Map = _run_root if _run_root != null else self
 	PlayerData.run_highest_level = maxi(PlayerData.run_highest_level, destination.level)
 	destination._run_root = run_root
-	destination.inventory = inventory
 	destination._player_entity = _player_entity
-	destination._player_entity.inventory = destination.inventory
 	destination.player_pos = destination_pos
 	destination._player_entity.pos = destination_pos
 	destination.creature.erase(destination_pos)
@@ -754,17 +792,16 @@ func _place_town_barricades() -> void:
 			original_tiles[position] = grid[position]
 			if position != opening:
 				grid[position] = TerrainData.get_terrain(TerrainData.TileType.BARRICADE)
+				floor_tiles.erase(position)
 		grid[opening] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
 		town_barricade_rectangles.append(candidate)
 		if not _town_floor_network_connected():
 			town_barricade_rectangles.pop_back()
 			for original_position: Vector2i in original_tiles:
 				grid[original_position] = original_tiles[original_position]
-	floor_tiles = _collect_tiles([TerrainData.TileType.FLOOR])
 
 func _first_town_floor_position() -> Vector2i:
-	for position_value: Variant in grid.keys():
-		var position: Vector2i = position_value
+	for position: Vector2i in grid.keys():
 		if grid[position].passable:
 			return position
 	return Vector2i(-1, -1)
@@ -966,16 +1003,15 @@ func _has_adjacent_tile_type(position: Vector2i, tile_type: TerrainData.Terrain)
 				return true
 	return false
 
-
 func _place_cave_geysers() -> void:
-	var geyser_count: int = maxi(randi_range(0, 4) - 1, 0)
+	var geyser_count: int = randi_range(-1, 3)
+	if geyser_count <= 0:
+		return
 	var eligible_floor_tiles: Array[Vector2i] = []
-	for position: Vector2i in grid:
+	for position: Vector2i in floor_tiles:
 		if grid[position].terrain_name != "cave floor":
 			continue
-		if position == player_pos or position == stairs_up_pos or position == stairs_down_pos:
-			continue
-		if creature.has(position) or item.has(position):
+		if position == player_pos or creature.has(position) or item.has(position):
 			continue
 		eligible_floor_tiles.append(position)
 	eligible_floor_tiles.shuffle()
@@ -993,7 +1029,7 @@ func _place_cave_geysers() -> void:
 func _are_walkable_tiles_connected() -> bool:
 	var walkable_positions: Array[Vector2i] = []
 	for position: Vector2i in grid:
-		if grid[position].passable:
+		if grid[position].passable and not grid[position].dangerous:
 			walkable_positions.append(position)
 	if walkable_positions.is_empty():
 		return false
@@ -1091,7 +1127,7 @@ func _compute_fov(observer: Creature) -> Dictionary[Vector2i, bool]:
 	var vision_context: Dictionary = {"sight_range": observer.sight_range}
 	StatusData.trigger(observer, StatusData.EffectType.VISION, vision_context)
 	if StatusData.has_status(observer, "Sleeping") or (observer is PlayerCreature and _resting):
-		vision_context.sight_range = maxi(1, floori(float(vision_context.get("sight_range", 1)) * 0.5))
+		vision_context.sight_range = maxi(1, floori(vision_context.get("sight_range", 1) * 0.5))
 	
 	var observer_pos: Vector2i = observer.pos
 	var sight_range: int = maxi(1, int(vision_context.get("sight_range", observer.sight_range)))
@@ -1151,16 +1187,6 @@ func _recompute_all_fov() -> void:
 	# Only the player's explored map persists between FOV computations.
 	seen_tiles.merge(visible_tiles, true)
 	_snapshot_visible_state()
-	for entity: Creature in creature.values():
-		if entity is PlayerCreature:
-			continue
-		# NPCs retain current visibility plus tiles they have previously seen.
-		entity.visible_tiles = _compute_fov(entity)
-		var known_tiles: Dictionary = entity.known_tiles
-		for known_position_value: Variant in entity.visible_tiles.keys():
-			var known_position: Vector2i = known_position_value
-			known_tiles[known_position] = grid[known_position]
-		entity.known_tiles = known_tiles
 	_log_new_sightings()
 	_maybe_show_low_health_tutorial()
 	_refresh_hover_path()
@@ -1320,8 +1346,8 @@ func _place_stairs() -> void:
 			path_start = adjacent_start
 	var distances: Dictionary = _terrain_distances(path_start)
 	var maximum_distance: int = 0
-	for distance_value: Variant in distances.values():
-		maximum_distance = maxi(maximum_distance, int(distance_value))
+	for distance_value: int in distances.values():
+		maximum_distance = maxi(maximum_distance, distance_value)
 	var candidates: Array[Vector2i] = []
 	var best_candidate_distance: int = -1
 	for tile: Vector2i in floor_tiles:
@@ -1377,52 +1403,6 @@ static func _ensure_altar_schedule() -> void:
 		_altar_extra_schedule[level_number] = altar_type
 		ID_TRANSFORM_ALTAR_LEVELS.append(level_number)
 
-func _place_altars() -> void:
-	altar_types.clear()
-	altar_positions.clear()
-	if level < 1 or level > ALTAR_LEVEL_COUNT:
-		return
-	_ensure_altar_schedule()
-	if _altar_primary_schedule.has(level):
-		altar_types.append(int(_altar_primary_schedule[level]))
-	if _altar_extra_schedule.has(level):
-		altar_types.append(int(_altar_extra_schedule[level]))
-	var strict_candidates: Array[Vector2i] = []
-	var fallback_candidates: Array[Vector2i] = []
-	for y: int in range(1, MAP_H - 1):
-		for x: int in range(1, MAP_W - 1):
-			var position: Vector2i = Vector2i(x, y)
-			var tile_type: TerrainData.Terrain = grid[position]
-			if not tile_type.passable or position == player_pos or position == stairs_up_pos or position == stairs_down_pos:
-				continue
-			if creature.has(position) or item.has(position):
-				continue
-			var has_impassable_neighbor: bool = false
-			for direction: Vector2i in StatusData.ADJACENT_DIRECTIONS:
-				var neighbor_type: TerrainData.Terrain = grid[position + direction]
-				if not neighbor_type.passable:
-					has_impassable_neighbor = true
-					break
-			if not has_impassable_neighbor:
-				strict_candidates.append(position)
-			fallback_candidates.append(position)
-	strict_candidates.shuffle()
-	fallback_candidates.shuffle()
-	var candidates: Array[Vector2i] = strict_candidates if strict_candidates.size() >= altar_types.size() else fallback_candidates
-	for altar_type: int in altar_types:
-		var selected_position: Vector2i = Vector2i(-1, -1)
-		while not candidates.is_empty():
-			var candidate_position: Vector2i = candidates.pop_back()
-			if altar_positions.has(candidate_position):
-				continue
-			selected_position = candidate_position
-			break
-		if selected_position.x < 0:
-			# Prefer fewer altars to placing one where an entity or impassable tile would be blocked.
-			break
-		grid[selected_position] = TerrainData.get_terrain(altar_type)
-		altar_positions.append(selected_position)
-
 func _adjacent_passable_tile_types(position: Vector2i) -> Array[TerrainData.Terrain]:
 	var passable_types: Array[TerrainData.Terrain] = []
 	for direction: Vector2i in [Vector2i.UP, Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT]:
@@ -1458,7 +1438,6 @@ func _init_player() -> void:
 		player_entity.pos = player_pos
 		player_entity.time = 0
 		player_entity.status = []
-		inventory = player_entity.inventory
 		creature[player_pos] = player_entity
 		_player_entity = player_entity
 
@@ -1555,8 +1534,7 @@ func _spawn_creature_definition(definition: Dictionary, spawn_time: float, add_t
 	var cluster_size: int = maxi(0, int(definition.get("cluster", 0)))
 	var matching_positions: Array[Vector2i] = []
 	var creature_name: String = str(definition.get("name", ""))
-	for position_value: Variant in creature.keys():
-		var existing_position: Vector2i = position_value
+	for existing_position: Vector2i in creature.keys():
 		var existing: Creature = creature[existing_position]
 		if existing.creature_name == creature_name and existing.health > 0:
 			matching_positions.append(existing_position)
@@ -1636,7 +1614,7 @@ func _place_items() -> void:
 	var free_tiles: Array[Vector2i] = []
 	for position: Vector2i in floor_tiles:
 		var tile: TerrainData.Terrain = grid[position]
-		if not _is_altar_tile(tile) and not _is_hazardous_terrain(tile) and tile.passable and not creature.has(position) and not item.has(position):
+		if not _is_altar_tile(tile) and not _is_hazardous_for_creature(_player_entity, tile) and tile.passable and not creature.has(position) and not item.has(position):
 			free_tiles.append(position)
 	free_tiles.shuffle()
 	
@@ -1653,7 +1631,7 @@ func _place_lyrical_orblet() -> void:
 		if position == stairs_up_pos or position == stairs_down_pos or position == player_pos:
 			continue
 		var tile: TerrainData.Terrain = grid[position]
-		if not _is_altar_tile(tile) and not _is_hazardous_terrain(tile) and tile.passable and not creature.has(position) and not item.has(position):
+		if not _is_altar_tile(tile) and not _is_hazardous_for_creature(_player_entity, tile) and tile.passable and not creature.has(position) and not item.has(position):
 			free_tiles.append(position)
 	if free_tiles.is_empty():
 		return
@@ -1662,8 +1640,7 @@ func _place_lyrical_orblet() -> void:
 func _active_transference_partner(target: Creature) -> Creature:
 	var current_time: float = maxf(float(environment_time), float(_player_entity.time))
 	var expired_link_ids: Array[int] = []
-	for link_id_value: Variant in _transference_links.keys():
-		var link_id: int = int(link_id_value)
+	for link_id: int in _transference_links.keys():
 		var linked_entities: Dictionary = _transference_links[link_id]
 		if current_time >= float(linked_entities.get("expires_at", 0.0)):
 			expired_link_ids.append(link_id)
@@ -1680,6 +1657,7 @@ func _active_transference_partner(target: Creature) -> Creature:
 	return null
 
 func _apply_sorcery_armor_cooldown_reduction(damage: int) -> void:
+	var inventory := PlayerData.inventory
 	if damage <= 0 or PlayerData.equipped_armor < 0 or PlayerData.equipped_armor >= inventory.size():
 		return
 	var armor: Item = inventory[PlayerData.equipped_armor]
@@ -1714,6 +1692,8 @@ func _heal_entity(target: Creature, amount: int, bypass_transference: bool = fal
 	var maximum_health: int = target.max_health
 	var previous_health: int = target.health
 	target["health"] = mini(maximum_health, previous_health + healing)
+	if target is PlayerCreature:
+		redraw_status.emit()
 	return maxi(0, target.health - previous_health)
 
 func _deal_damage(target: Creature, amount: int, damage_type: String = "physical", bypass_transference: bool = false) -> int:
@@ -1740,6 +1720,7 @@ func _deal_damage(target: Creature, amount: int, damage_type: String = "physical
 	target.health = previous_health - incoming_damage
 	if target == _player_entity:
 		_apply_sorcery_armor_cooldown_reduction(incoming_damage)
+		redraw_status.emit()
 	if target is PlayerCreature:
 		_play_player_hit_sound()
 		_maybe_show_low_health_tutorial()
@@ -1782,9 +1763,9 @@ func _status_context() -> Dictionary:
 	return {"damage_callback": Callable(self, "_status_damage_callback")}
 
 func _apply_player_armor_status_ego(status_name: String, duration: int) -> int:
-	if PlayerData.equipped_armor < 0 or PlayerData.equipped_armor >= inventory.size():
+	if PlayerData.equipped_armor < 0 or PlayerData.equipped_armor >= PlayerData.inventory.size():
 		return duration
-	var armor: Item = inventory[PlayerData.equipped_armor]
+	var armor: Item = PlayerData.inventory[PlayerData.equipped_armor]
 	var ego: String = armor.ego
 	var reduction_ego: String = ""
 	if status_name == "Burning" or status_name == "Frozen":
@@ -1976,8 +1957,7 @@ func _ignite_flammable_tile(position: Vector2i, concentration: int = 30) -> void
 	redraw.emit()
 
 func _record_environment_candidate(candidates: Dictionary, position: Vector2i, effect: Dictionary) -> void:
-	var existing_value: Variant = candidates.get(position, {})
-	var existing: Dictionary = existing_value if existing_value is Dictionary else {}
+	var existing: Dictionary = candidates.get(position, {})
 	if existing.is_empty() or _environment_concentration(effect) > _environment_concentration(existing):
 		candidates[position] = effect.duplicate(true)
 
@@ -1994,13 +1974,8 @@ func _step_environment(effect_types: Array[String]) -> void:
 	var next_state: Dictionary = environment.duplicate(true)
 	var candidates: Dictionary = {}
 	var extinguished_fire: Dictionary[Vector2i, bool] = {}
-	for position_value: Variant in snapshot.keys():
-		var position: Vector2i = position_value
-		var effect_value: Variant = snapshot[position]
-		if not effect_value is Dictionary:
-			next_state.erase(position)
-			continue
-		var effect: Dictionary = effect_value
+	for position: Vector2i in snapshot.keys():
+		var effect: Dictionary = snapshot[position]
 		var effect_type: String = _environment_kind(effect)
 		if effect_types.has("smoke") and effect_type == "fire":
 			for smoke_position: Vector2i in _environment_neighbors(position):
@@ -2029,18 +2004,15 @@ func _step_environment(effect_types: Array[String]) -> void:
 				continue
 			var candidate: Dictionary = {"type": effect_type, "concentration": maxi(1, remaining), "burns_terrain": false}
 			_record_environment_candidate(candidates, neighbor, candidate)
-	for position_value: Variant in candidates.keys():
-		var position: Vector2i = position_value
+	for position: Vector2i in candidates.keys():
 		var candidate: Dictionary = candidates[position]
-		var existing_value: Variant = next_state.get(position, {})
-		var existing: Dictionary = existing_value if existing_value is Dictionary else {}
+		var existing: Dictionary = next_state.get(position, {})
 		if existing.is_empty() or _environment_concentration(candidate) > _environment_concentration(existing):
 			if _environment_kind(existing) == "fire" and _environment_kind(candidate) != "fire" and bool(existing.get("burns_terrain", false)):
 				grid[position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
 			next_state[position] = candidate
 	for position: Vector2i in extinguished_fire:
-		var final_value: Variant = next_state.get(position, {})
-		var final_effect: Dictionary = final_value if final_value is Dictionary else {}
+		var final_effect: Dictionary = next_state.get(position, {})
 		if _environment_kind(final_effect) != "fire" and bool(extinguished_fire[position]):
 			grid[position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
 	environment = next_state
@@ -2067,10 +2039,16 @@ func _process_creature_respawn() -> void:
 func _advance_environment_time(target_time: int) -> void:
 	if target_time < environment_time:
 		return
+	# Timer effect: decrement timer and call effect_timed when it runs out
+	for position in grid:
+		var terrain: TerrainData.Terrain = grid[position]
+		if terrain.timer >= 0:
+			terrain.timer -= target_time - environment_time
+			if terrain.timer <= 0 and terrain.effect_timed.is_valid():
+				terrain.effect_timed.call(grid, environment, position)
 	while true:
-		var next_time: int = 99999
-		for kind_value: Variant in environment_next_tick.keys():
-			var tick_time: int = environment_next_tick[kind_value]
+		var next_time: int = INT64_MAX
+		for tick_time: int in environment_next_tick.values():
 			next_time = mini(next_time, tick_time)
 		if _creature_population_initialized:
 			next_time = mini(next_time, next_respawn_time)
@@ -2108,7 +2086,7 @@ func _prepare_environment_turn(entity: Creature) -> void:
 	_advance_environment_time(maxi(environment_time, turn_time))
 	if is_equal_approx(float(entity.environment_checked_time), float(turn_time)):
 		return
-	entity["environment_checked_time"] = turn_time
+	entity.environment_checked_time = turn_time
 	_environment_start_turn(entity)
 
 func _creature_avoids_poison_pool(entity: Creature) -> bool:
@@ -2122,11 +2100,6 @@ func _environment_start_turn(entity: Creature) -> void:
 	if terrain.effect_entered.is_valid() and (not entity.has_trait("Flying") or terrain.affects_flyers):
 		terrain.effect_entered.call(entity, position, self)
 
-# Timer effect: decrement timer and call effect_timed when it runs out
-	if terrain.timer >= 0:
-		terrain.timer -= 1
-		if terrain.timer == 0 and terrain.effect_timed.is_valid():
-			terrain.effect_timed.call(grid, environment, position)
 	if entity.health <= 0:
 		return
 	if _environment_visible(position):
@@ -2147,9 +2120,9 @@ func _adjust_delay(entity: Creature, delay: int) -> int:
 	return maxi(1, roundi(float(delay_context.get("delay", delay)))) if delay > 0 else 0
 
 func _record_armor_wear_time(entity: Creature, elapsed_time: int) -> void:
-	if entity != _player_entity or PlayerData.equipped_armor < 0 or PlayerData.equipped_armor >= inventory.size() or elapsed_time <= 0:
+	if entity != _player_entity or PlayerData.equipped_armor < 0 or PlayerData.equipped_armor >= PlayerData.inventory.size() or elapsed_time <= 0:
 		return
-	var worn_armor: Item = inventory[PlayerData.equipped_armor]
+	var worn_armor: Item = PlayerData.inventory[PlayerData.equipped_armor]
 	if worn_armor.get_id_status() == ItemData.ID_STATUS.FULL_ID:
 		return
 	worn_armor.identification_progress += elapsed_time
@@ -2303,10 +2276,10 @@ func _creature_detection_minimum(entity: EnemyCreature) -> float:
 		return 0.0
 	var minimum_range: float = entity.detection_range_min
 	if _player_entity and creature.get(player_pos, null) == _player_entity:
-		var stealth_bonus: int = PlayerData.equipped_armor_ego_bonus(_player_entity, "stealth")
+		var stealth_bonus: int = PlayerData.equipped_armor_ego_bonus("stealth")
 		minimum_range -= float(stealth_bonus)
-		if stealth_bonus > 0 and PlayerData.equipped_armor >= 0 and PlayerData.equipped_armor < inventory.size():
-			inventory[PlayerData.equipped_armor].identify_partially()
+		if stealth_bonus > 0 and PlayerData.equipped_armor >= 0 and PlayerData.equipped_armor < PlayerData.inventory.size():
+			PlayerData.inventory[PlayerData.equipped_armor].identify_partially()
 	return maxf(0.0, minimum_range)
 
 func _creature_detection_maximum(entity: EnemyCreature) -> float:
@@ -2432,12 +2405,6 @@ func _record_recent_creature_sight(entity: EnemyCreature) -> void:
 	var awareness_mode: String = entity.awareness_mode
 	var tile_history: Array = entity.enemy_seen_tiles_history
 	var player_history: Array = entity.enemy_player_sight_history
-	var visible_now: Dictionary = _compute_fov(entity)
-	var known_tiles: Dictionary = entity.known_tiles
-	for position_value: Variant in visible_now.keys():
-		var visible_position: Vector2i = position_value
-		known_tiles[visible_position] = grid[visible_position]
-	entity.known_tiles = known_tiles
 	if awareness_mode in ["aware", "searching"] and (not tile_history.is_empty() or not player_history.is_empty()):
 		var latest_history_turn: int = 0
 		if not tile_history.is_empty():
@@ -2451,7 +2418,7 @@ func _record_recent_creature_sight(entity: EnemyCreature) -> void:
 	var visible_tiles_for_history: Dictionary = _compute_fov(entity)
 	entity.visible_tiles = visible_tiles_for_history
 	var visible_positions: Array[Vector2i] = []
-	for position_value: Variant in visible_tiles_for_history.keys():
+	for position_value: Vector2i in visible_tiles_for_history.keys():
 		visible_positions.append(position_value)
 	tile_history.append({"turn": sight_turn, "tiles": visible_positions})
 	while not tile_history.is_empty() and sight_turn - int(tile_history[0].get("turn", 0)) >= 5:
@@ -2465,17 +2432,15 @@ func _record_recent_creature_sight(entity: EnemyCreature) -> void:
 			player_history.pop_front()
 		entity.enemy_player_sight_history = player_history
 		var recent_positions: Array[Vector2i] = []
-		for record_value: Variant in player_history:
-			var record: Dictionary = record_value
+		for record: Dictionary in player_history:
 			recent_positions.append(record.get("pos", player_pos))
 		entity.enemy_sight_history = recent_positions
 
 func _recently_seen_creature_tiles(entity: EnemyCreature) -> Dictionary:
 	var remembered_positions: Dictionary = {}
 	var tile_history: Array = entity.enemy_seen_tiles_history
-	for record_value: Variant in tile_history:
-		var record: Dictionary = record_value
-		for position_value: Variant in record.get("tiles", []):
+	for record: Dictionary in tile_history:
+		for position_value: Vector2i in record.get("tiles", Vector2i(-1, -1)):
 			remembered_positions[position_value] = true
 	return remembered_positions
 
@@ -2495,7 +2460,7 @@ func _prediction_step_is_open(entity: Creature, origin: Vector2i, direction: Vec
 		if not side_x_open and not side_y_open:
 			return false
 	if for_player:
-		if _is_hazardous_terrain(target_tile) and not _player_can_enter_hazard(target):
+		if _is_hazardous_for_creature(_player_entity, target_tile) and _has_safe_player_move():
 			return false
 	else:
 		if not _is_valid_creature_move(entity, direction):
@@ -2508,8 +2473,7 @@ func _prediction_step_is_open(entity: Creature, origin: Vector2i, direction: Vec
 func _predicted_unholy_search_target(entity: EnemyCreature, last_seen: Vector2i) -> Vector2i:
 	var player_history: Array = entity.enemy_player_sight_history
 	var unique_positions: Array[Vector2i] = []
-	for record_value: Variant in player_history:
-		var record: Dictionary = record_value
+	for record: Dictionary in player_history:
 		var remembered_position: Vector2i = record.get("pos", last_seen)
 		if unique_positions.is_empty() or unique_positions.back() != remembered_position:
 			unique_positions.append(remembered_position)
@@ -2607,8 +2571,7 @@ func _active_fire_concentration(position: Vector2i) -> int:
 	return _environment_concentration(effect)
 
 func _has_active_fire() -> bool:
-	for position_value: Variant in environment.keys():
-		var position: Vector2i = position_value
+	for position: Vector2i in environment.keys():
 		if _active_fire_concentration(position) > 0:
 			return true
 	return false
@@ -2741,14 +2704,10 @@ func _burning_escape_action(entity: Creature) -> int:
 		visible_tiles_for_entity = _compute_fov(entity)
 		entity.visible_tiles = visible_tiles_for_entity
 	var cooling_candidates: Dictionary = {}
-	for visible_position_value: Variant in visible_tiles_for_entity.keys():
+	for visible_position_value: Vector2i in visible_tiles_for_entity.keys():
 		cooling_candidates[visible_position_value] = true
-	var known_tiles: Dictionary = entity.known_tiles
-	for known_position_value: Variant in known_tiles.keys():
-		cooling_candidates[known_position_value] = true
 	var cold_destinations: Array[Vector2i] = []
-	for candidate_value: Variant in cooling_candidates.keys():
-		var destination: Vector2i = candidate_value
+	for destination: Vector2i in cooling_candidates.keys():
 		var destination_tile: TerrainData.Terrain = grid[destination]
 		if destination_tile.Flammability not in [TerrainData.Flammability.EXTINGUISH_STEAM, TerrainData.Flammability.EXTINGUISH_MELT_TO_FLOOR, TerrainData.Flammability.EXTINGUISH_MELT_TO_WATER]:
 			continue
@@ -3042,7 +3001,7 @@ func _act_creature_awareness(entity: EnemyCreature) -> int:
 		if entity.has_trait("Mindless") or category == CreatureData.CreatureCategory.UNHOLY:
 			if not sight_history.is_empty():
 				var center: Vector2 = Vector2.ZERO
-				for remembered_position_value: Variant in sight_history:
+				for remembered_position_value: Vector2i in sight_history:
 					center += Vector2(remembered_position_value)
 				center /= float(sight_history.size())
 				var directions: Array[Vector2i] = _available_creature_directions(entity, Vector2i.ZERO)
@@ -3086,8 +3045,7 @@ func _roll_unaware_behavior(entity: Creature, visible_conspecifics: Array[Creatu
 func _visible_creature_group(entity: Creature) -> Array[Creature]:
 	var result: Array[Creature] = []
 	var entity_visible_tiles: Dictionary = entity.visible_tiles
-	for visible_position_value: Variant in entity_visible_tiles.keys():
-		var visible_position: Vector2i = visible_position_value
+	for visible_position: Vector2i in entity_visible_tiles.keys():
 		if visible_position == player_pos or not creature.has(visible_position) or visible_position == entity.pos:
 			continue
 		if can_swim(entity) and not _is_water_tile(grid[visible_position]):
@@ -3161,18 +3119,11 @@ func _act_unaware_creature(entity: Creature) -> int:
 	if behavior == "wander":
 		var reachable_known_points: Array[Vector2i] = []
 		var sight_limit: int = entity.sight_range * 2
-		var known_tiles: Dictionary = entity.known_tiles
-		var creature_visible_tiles: Dictionary = entity.visible_tiles
-		var visited_points: Dictionary = {}
-		for position_value: Variant in known_tiles.keys() + creature_visible_tiles.keys():
-			var candidate_position: Vector2i = position_value
-			if visited_points.has(candidate_position):
-				continue
-			visited_points[candidate_position] = true
+		for candidate_position: Vector2i in floor_tiles:
 			if candidate_position != entity.pos and entity.pos.distance_squared_to(candidate_position) <= sight_limit * sight_limit and not creature.has(candidate_position) and _creature_can_reach_any_known_tile(entity, candidate_position):
 				reachable_known_points.append(candidate_position)
 		var spawn_position: Vector2i = entity.spawn_position
-		if spawn_position != entity.pos and entity.pos.distance_squared_to(spawn_position) <= sight_limit * sight_limit and not creature.has(spawn_position) and not visited_points.has(spawn_position) and _creature_can_reach_any_known_tile(entity, spawn_position):
+		if spawn_position != entity.pos and entity.pos.distance_squared_to(spawn_position) <= sight_limit * sight_limit and not creature.has(spawn_position) and _creature_can_reach_any_known_tile(entity, spawn_position):
 			reachable_known_points.append(spawn_position)
 		if not reachable_known_points.is_empty():
 			var destination: Vector2i = reachable_known_points.pick_random()
@@ -3273,8 +3224,7 @@ func _act_flitting_randomly(entity: Creature) -> int:
 
 func _phantom_blade_summon_position(shaman: Creature, visible_positions: Dictionary) -> Vector2i:
 	var candidates: Array[Vector2i] = []
-	for position_value: Variant in visible_positions.keys():
-		var position: Vector2i = position_value
+	for position: Vector2i in visible_positions.keys():
 		if creature.has(position) or item.has(position):
 			continue
 		if _is_altar_tile(grid[position]) or _is_stairs_tile(grid[position]):
@@ -3323,8 +3273,7 @@ func _act_goblin_shaman_heal(entity: Creature) -> int:
 	var injured_goblins: Array[Creature] = []
 	var seeking_goblins: Array[Creature] = []
 	var has_nearby_goblin: bool = false
-	for visible_position_value: Variant in shaman_visible_positions.keys():
-		var visible_position: Vector2i = visible_position_value
+	for visible_position: Vector2i in shaman_visible_positions.keys():
 		if not creature.has(visible_position):
 			continue
 		var candidate: Creature = creature[visible_position]
@@ -3491,8 +3440,7 @@ func _nearest_creature_target(entity: Creature) -> Creature:
 	var best_target: Creature = null
 	var best_distance: int = 2147483647
 	var can_attack_allies: bool = _creature_can_attack_non_player_targets(entity)
-	for entity_value: Variant in creature.values():
-		var candidate: Creature = entity_value
+	for candidate: Creature in creature.values():
 		if candidate == entity or candidate.health <= 0 or StatusData.has_status(candidate, "Invisible"):
 			continue
 		if not candidate is PlayerCreature and not can_attack_allies:
@@ -3585,12 +3533,11 @@ func _confused_creature_action(entity: Creature, intended: Vector2i) -> int:
 		return _creature_attack(entity, creature[destination])
 	return _move_creature(entity, selected)
 
-func _is_hazardous_terrain(tile: TerrainData.Terrain) -> bool:
-	return tile.terrain_name in ["lava", "deep lake"]
-
 func _is_hazardous_for_creature(entity: Creature, tile: TerrainData.Terrain) -> bool:
 	if tile.terrain_name == "lava":
 		return not (entity.has_trait("Flying") and entity.has_named_immunity("fire"))
+	if tile.terrain_name == "steam geyser":
+		return true
 	if tile.terrain_name != "deep lake" or entity.has_trait("Flying") or can_swim(entity):
 		return false
 	return entity.category != CreatureData.CreatureCategory.UNHOLY
@@ -3677,7 +3624,7 @@ func _has_safe_player_move() -> bool:
 		if creature.has(destination):
 			continue
 		var destination_tile: TerrainData.Terrain = grid[destination]
-		if _is_hazardous_terrain(destination_tile) or not destination_tile.passable:
+		if _is_hazardous_for_creature(_player_entity, destination_tile) or not destination_tile.passable:
 			continue
 		if direction.x != 0 and direction.y != 0:
 			var horizontal: TerrainData.Terrain = grid[player_pos + Vector2i(direction.x, 0)]
@@ -3686,10 +3633,6 @@ func _has_safe_player_move() -> bool:
 				continue
 		return true
 	return false
-
-func _player_can_enter_hazard(_destination: Vector2i) -> bool:
-	var origin_tile: TerrainData.Terrain = grid[player_pos]
-	return _is_hazardous_terrain(origin_tile) and not _has_safe_player_move()
 
 func _available_player_directions(intended: Vector2i, allow_attacks: bool = false) -> Array[Vector2i]:
 	var available: Array[Vector2i] = []
@@ -3706,17 +3649,17 @@ func _available_player_directions(intended: Vector2i, allow_attacks: bool = fals
 			continue
 		var target_tile: TerrainData.Terrain = grid[target]
 		var origin_tile: TerrainData.Terrain = grid[player_pos]
-		if _is_hazardous_terrain(target_tile):
-			if not _player_can_enter_hazard(target):
+		if _is_hazardous_for_creature(_player_entity, target_tile):
+			if _has_safe_player_move():
 				continue
 		elif not target_tile.passable:
 			continue
 		if direction.x != 0 and direction.y != 0:
 			var horizontal_tile: TerrainData.Terrain = grid[player_pos + Vector2i(direction.x, 0)]
 			var vertical_tile: TerrainData.Terrain = grid[player_pos + Vector2i(0, direction.y)]
-			var origin_is_hazardous: bool = _is_hazardous_terrain(origin_tile)
-			var horizontal_passable: bool = horizontal_tile.passable or (origin_is_hazardous and _is_hazardous_terrain(horizontal_tile))
-			var vertical_passable: bool = vertical_tile.passable or (origin_is_hazardous and _is_hazardous_terrain(vertical_tile))
+			var origin_is_hazardous: bool = _is_hazardous_for_creature(_player_entity, origin_tile)
+			var horizontal_passable: bool = horizontal_tile.passable or (origin_is_hazardous and _is_hazardous_for_creature(_player_entity, horizontal_tile))
+			var vertical_passable: bool = vertical_tile.passable or (origin_is_hazardous and _is_hazardous_for_creature(_player_entity, vertical_tile))
 			if not horizontal_passable and not vertical_passable:
 				continue
 		if _creature_at(target):
@@ -3789,24 +3732,24 @@ func _move_creature(entity: Creature, direction: Vector2i) -> int:
 	return move_cost
 
 func _record_player_weapon_attack() -> void:
-	if PlayerData.equipped_weapon < 0 or PlayerData.equipped_weapon >= inventory.size():
+	if PlayerData.equipped_weapon < 0 or PlayerData.equipped_weapon >= PlayerData.inventory.size():
 		return
-	inventory[PlayerData.equipped_weapon].record_identification_progress(1, 50)
+	PlayerData.inventory[PlayerData.equipped_weapon].record_identification_progress(1, 50)
 
 func _record_player_armor_attack() -> void:
-	if PlayerData.equipped_armor < 0 or PlayerData.equipped_armor >= inventory.size():
+	if PlayerData.equipped_armor < 0 or PlayerData.equipped_armor >= PlayerData.inventory.size():
 		return
-	inventory[PlayerData.equipped_armor].record_identification_progress(20, 4000)
+	PlayerData.inventory[PlayerData.equipped_armor].record_identification_progress(20, 4000)
 
 func _player_weapon_ego_bonus(ego_name: String) -> int:
-	if not _player_entity or PlayerData.equipped_weapon < 0 or PlayerData.equipped_weapon >= inventory.size() or not creature.has(player_pos) or creature[player_pos] != _player_entity:
+	if not _player_entity or PlayerData.equipped_weapon < 0 or PlayerData.equipped_weapon >= PlayerData.inventory.size() or not creature.has(player_pos) or creature[player_pos] != _player_entity:
 		return 0
-	return PlayerData.equipped_weapon_ego_bonus(_player_entity, ego_name)
+	return PlayerData.equipped_weapon_ego_bonus(ego_name)
 
 func _player_weapon_ego_name() -> String:
-	if PlayerData.equipped_weapon < 0 or PlayerData.equipped_weapon >= inventory.size():
+	if PlayerData.equipped_weapon < 0 or PlayerData.equipped_weapon >= PlayerData.inventory.size():
 		return ""
-	var weapon: Weapon = inventory[PlayerData.equipped_weapon]
+	var weapon: Weapon = PlayerData.inventory[PlayerData.equipped_weapon]
 	return weapon.ego
 
 func _identify_weapon_ego_if_effective(weapon: Weapon, ego_name: String, ego_level: int, applied_damage: int = 0) -> void:
@@ -3843,22 +3786,20 @@ func _act_thief_flee(thief: Creature) -> int:
 	)
 	return _move_creature(thief, flee_directions[0])
 
-func _thief_steal_item(thief: EnemyCreature, victim: PlayerCreature) -> bool:
-	var victim_inventory: Array = victim.inventory
-	if victim_inventory.is_empty() or thief.stolen_item != null:
+func _thief_steal_item(thief: EnemyCreature) -> bool:
+	var inventory := PlayerData.inventory
+	if inventory.is_empty() or thief.stolen_item != null:
 		return false
-	var stolen_index: int = randi_range(0, victim_inventory.size() - 1)
+	var stolen_index: int = randi_range(0, inventory.size() - 1)
 	if stolen_index == PlayerData.equipped_weapon or stolen_index == PlayerData.equipped_armor:
 		return false
-	var stolen_item: Item = victim_inventory[stolen_index]
+	var stolen_item: Item = inventory[stolen_index]
 	thief.stolen_item = stolen_item
-	victim_inventory.remove_at(stolen_index)
+	inventory.remove_at(stolen_index)
 	if PlayerData.equipped_weapon > stolen_index:
 		PlayerData.equipped_weapon -= 1
 	if PlayerData.equipped_armor > stolen_index:
 		PlayerData.equipped_armor -= 1
-	victim.inventory = victim_inventory
-	inventory = victim_inventory
 	_append_message("%s steals %s!" % [_creature_dp(thief, true).capitalize(), _item_dp(stolen_item, true)])
 	thief.behavior_mode = "flee"
 	return true
@@ -3881,6 +3822,7 @@ func _push_creature_from(attacker: Creature, defender: Creature, distance: int) 
 			_ignite_flammable_tile(destination)
 
 func _corrode_equipped_weapon() -> void:
+	var inventory := PlayerData.inventory
 	var weapon_index: int = PlayerData.equipped_weapon
 	if weapon_index < 0 or weapon_index >= inventory.size():
 		return
@@ -3890,7 +3832,6 @@ func _corrode_equipped_weapon() -> void:
 	corroded_weapon.damage -= 1
 	if int(corroded_weapon.damage) < 0:
 		inventory.remove_at(weapon_index)
-		_player_entity.inventory = inventory
 		if PlayerData.equipped_armor > weapon_index:
 			PlayerData.equipped_armor -= 1
 		_append_message("The corrosive slime destroys your %s." % corroded_weapon.get_item_name())
@@ -3899,6 +3840,7 @@ func _corrode_equipped_weapon() -> void:
 	_append_message("Your %s corrodes." % corroded_weapon.get_item_name())
 
 func _corrode_equipped_armor() -> void:
+	var inventory := PlayerData.inventory
 	var armor_index: int = PlayerData.equipped_armor
 	if armor_index < 0 or armor_index >= inventory.size():
 		return
@@ -3908,7 +3850,6 @@ func _corrode_equipped_armor() -> void:
 	corroded_armor.armor -= 1
 	if int(corroded_armor.armor) < 0:
 		inventory.remove_at(armor_index)
-		_player_entity.inventory = inventory
 		if PlayerData.equipped_weapon > armor_index:
 			PlayerData.equipped_weapon -= 1
 		_append_message("The corrosive slime destroys your %s." % corroded_armor.get_item_name())
@@ -3917,6 +3858,7 @@ func _corrode_equipped_armor() -> void:
 	_append_message("Your %s corrodes." % corroded_armor.get_item_name())
 
 func _resolve_attack(attacker: Creature, defender: Creature, attack_verb: String = "", weapon_melee_attack: bool = false, allow_weapon_sweeps: bool = true, uses_projectile: Projectile = null) -> bool:
+	var inventory := PlayerData.inventory
 	var defender_health_before: int = defender.health
 	var attacker_is_player: bool = attacker is PlayerCreature
 	var defender_is_player: bool = defender is PlayerCreature
@@ -3924,7 +3866,7 @@ func _resolve_attack(attacker: Creature, defender: Creature, attack_verb: String
 	var attack_result: bool
 	var uses_player_weapon: bool = weapon_melee_attack and attacker == _player_entity and _player_weapon_ego_name() != ""
 	var weapon_ego: String = _player_weapon_ego_name() if uses_player_weapon else ""
-	var weapon_ego_level: int = int(inventory[PlayerData.equipped_weapon].get("enchantment", 0)) if uses_player_weapon and PlayerData.equipped_weapon >= 0 and PlayerData.equipped_weapon < inventory.size() else 0
+	var weapon_ego_level: int = inventory[PlayerData.equipped_weapon].enchantment if uses_player_weapon and PlayerData.equipped_weapon >= 0 and PlayerData.equipped_weapon < inventory.size() else 0
 	var helpless: bool = StatusData.has_status(defender, "Helpless")
 	if not helpless and not attacker_is_player and StatusData.has_status(defender, "Invisible") and not StatusData.has_status(attacker, "Blind"):
 		attack_result = false
@@ -3939,8 +3881,8 @@ func _resolve_attack(attacker: Creature, defender: Creature, attack_verb: String
 		_make_creature_aware_of_player(defender)
 	var defender_evasion: int = _creature_terrain_evasion(defender)
 	if defender is PlayerCreature:
-		defender_evasion += PlayerData.equipped_armor_ego_bonus(_player_entity, "evasion")
-		if PlayerData.equipped_armor_ego_bonus(_player_entity, "evasion") > 0 and PlayerData.equipped_armor >= 0 and PlayerData.equipped_armor < inventory.size():
+		defender_evasion += PlayerData.equipped_armor_ego_bonus("evasion")
+		if PlayerData.equipped_armor_ego_bonus("evasion") > 0 and PlayerData.equipped_armor >= 0 and PlayerData.equipped_armor < inventory.size():
 			inventory[PlayerData.equipped_armor].identify_partially()
 	var reflection_damage: int = 0
 	var retaliatory_delay: int = 0
@@ -4016,7 +3958,7 @@ func _resolve_attack(attacker: Creature, defender: Creature, attack_verb: String
 		_corrode_equipped_armor()
 	if applied_damage > 0 and not attacker_is_player:
 		if attacker.has_trait("Thief") and defender is PlayerCreature: 
-			_thief_steal_item(attacker, defender)
+			_thief_steal_item(attacker)
 		if attacker.has_trait("Venomous"):  
 			apply_status_to_entity(defender, "Poisoned", 5)
 		if attacker.has_trait("Paralyzing"):
@@ -4084,7 +4026,7 @@ func _resolve_attack(attacker: Creature, defender: Creature, attack_verb: String
 		if applied_damage > 0:
 			_append_message("%s %s %s for %s damage." % [attacker_name, verb, defender_name, applied_damage])
 		elif armor_deflected and defender is PlayerCreature:
-			_append_message("%s attacks %s, but your %s deflects the blow." % [attacker_name, defender_name, _player_entity.inventory[PlayerData.equipped_armor].get_item_name()])
+			_append_message("%s attacks %s, but your %s deflects the blow." % [attacker_name, defender_name, PlayerData.inventory[PlayerData.equipped_armor].get_item_name()])
 		elif armor_deflected:
 			_append_message("%s %s %s, but its armor deflects the blow." % [attacker_name, verb, defender_name])
 		elif attacker_is_player:
@@ -4103,9 +4045,9 @@ func _resolve_attack(attacker: Creature, defender: Creature, attack_verb: String
 
 func _player_has_reach() -> bool:
 	var weapon_index: int = PlayerData.equipped_weapon
-	if weapon_index < 0 or weapon_index >= inventory.size():
+	if weapon_index < 0 or weapon_index >= PlayerData.inventory.size():
 		return false
-	var equipped_weapon: Item = inventory[weapon_index]
+	var equipped_weapon: Item = PlayerData.inventory[weapon_index]
 	return equipped_weapon.reach
 
 func _flush_death_messages() -> void:
@@ -4167,20 +4109,14 @@ func _remove_item_if_blocking_altar(position: Vector2i) -> void:
 func _path_knows_tile(pos: Vector2i, source: Variant, from_creature: bool) -> bool:
 	if pos.x < 0 or pos.x >= MAP_W or pos.y < 0 or pos.y >= MAP_H:
 		return false
-	if not from_creature:
-		return true
-	if source is PlayerCreature:
+	if from_creature and source is PlayerCreature:
 		return seen_tiles.has(pos)
-	var known_tiles: Dictionary = source.known_tiles
-	return known_tiles.has(pos)
+	return true
 
 func _path_tile_type(pos: Vector2i, source: Variant, from_creature: bool) -> TerrainData.Terrain:
 	if not from_creature:
 		return grid[pos]
-	if not source is PlayerCreature:
-		var known_tiles: Dictionary = source.known_tiles
-		return known_tiles.get(pos, grid[pos])
-	if visible_tiles.has(pos):
+	if not source is PlayerCreature or visible_tiles.has(pos):
 		return grid[pos]
 	return tile_last_seen[pos]
 
@@ -4241,6 +4177,9 @@ func _player_path_to(target: Vector2i) -> Dictionary:
 				continue
 			var next_tile: TerrainData.Terrain = _path_tile_type(next_pos, _player_entity, true)
 			if not next_tile.passable:
+				continue
+			# Exclude dangerous tiles (lava, deep lake) from hover path
+			if _is_hazardous_for_creature(_player_entity, next_tile):
 				continue
 			if visible_tiles.has(next_pos) and creature.has(next_pos) and next_pos != player_pos:
 				continue
@@ -4356,15 +4295,15 @@ func _is_observed_by_player(entity: Creature) -> bool:
 func _attack_verb(attacker: Creature) -> String:
 	if attacker is PlayerCreature:
 		var weapon_index: int = PlayerData.equipped_weapon
-		if weapon_index >= 0 and weapon_index < inventory.size():
-			var weapon: Item = inventory[weapon_index]
+		if weapon_index >= 0 and weapon_index < PlayerData.inventory.size():
+			var weapon: Item = PlayerData.inventory[weapon_index]
 			var weapon_verbs: Array = weapon.attack_str
-			if not weapon_verbs.is_empty():
-				return str(weapon_verbs.pick_random())
+			if weapon_verbs:
+				return weapon_verbs.pick_random()
 			return "hit"
 		return UNARMED_ATTACK_WORDS.pick_random()
 	var creature_verbs: Array = attacker.attack_str
-	if not creature_verbs.is_empty():
+	if creature_verbs:
 		return creature_verbs.pick_random()
 	return "hits"
 
@@ -4376,6 +4315,7 @@ func _reset_inspect_mode() -> void:
 	_inspect_entries.clear()
 	_inspect_entry_index = -1
 	_inspect_focus_signature = ""
+	inspect_changed.emit()
 
 func set_console_cursor_position(position: Vector2i) -> void:
 	if console_cursor_position == position:
@@ -4393,7 +4333,7 @@ func _inventory_index_at_cursor() -> int:
 	if line_index < 0 or line_index >= text_lines.size():
 		return -1
 	var displayed_line: String = text_lines[line_index].trim_prefix("║").trim_suffix("║").strip_edges()
-	for inventory_index: int in range(inventory.size()):
+	for inventory_index: int in range(PlayerData.inventory.size()):
 		if displayed_line.begins_with("(%s) " % StatusPanel.inventory_letter(inventory_index)):
 			return inventory_index
 	return -1
@@ -4428,7 +4368,7 @@ func _build_inspect_entries() -> Array[Dictionary]:
 	if entries.is_empty() and show_inventory:
 		var inventory_index: int = _inventory_index_at_cursor()
 		if inventory_index >= 0:
-			var carried_item: Item = inventory[inventory_index]
+			var carried_item: Item = PlayerData.inventory[inventory_index]
 			entries.append({"kind": "item", "id": inventory_index, "description": carried_item.get_description()})
 	return entries
 
@@ -4441,12 +4381,12 @@ func _inspect_signature(entries: Array[Dictionary]) -> String:
 	return "|".join(signature_parts)
 
 func _inspect_item_inventory_index(inventory_index: int) -> void:
-	if inventory_index < 0 or inventory_index >= inventory.size():
+	redraw_status.emit()
+	if inventory_index < 0 or inventory_index >= PlayerData.inventory.size():
 		inspect_item_selection_active = false
 		inspect_inventory_index = -1
-		redraw.emit()
 		return
-	var selected_item: Item = inventory[inventory_index]
+	var selected_item: Item = PlayerData.inventory[inventory_index]
 	inspect_inventory_index = inventory_index
 	_inspect_entries = [{"kind": "item", "id": inventory_index, "description": selected_item.get_description()}]
 	_inspect_focus_signature = _inspect_signature(_inspect_entries)
@@ -4455,33 +4395,31 @@ func _inspect_item_inventory_index(inventory_index: int) -> void:
 	inspect_mode = true
 	inspect_description = _inspect_entries[0].get("description", "")
 	console_cursor_position = Vector2i(VIEW_W + 1, _inventory_item_line_index(inventory_index) + 1)
-	redraw.emit()
+	inspect_changed.emit()
 
 func _handle_inspect_item_selection(event: InputEventKey) -> bool:
 	if not inspect_item_selection_active or not event.pressed or event.echo:
 		return false
 	var inventory_index: int = _inventory_index_from_key(event)
-	if inventory_index >= 0 and inventory_index < inventory.size():
+	if inventory_index >= 0 and inventory_index < PlayerData.inventory.size():
 		_inspect_item_inventory_index(inventory_index)
 		return true
 	if event.is_action_pressed("abort") or event.is_action_pressed("inspect"):
 		inspect_item_selection_active = false
 		inspect_inventory_index = -1
-		redraw.emit()
+		redraw_status.emit()
 		return true
 	if event.is_action_pressed("inventory_toggle"):
 		inspect_item_selection_active = false
 		inspect_inventory_index = -1
 		show_inventory = false
-		redraw.emit()
+		redraw_status.emit()
 		return true
 	if event.is_action_pressed("equip") or event.is_action_pressed("drop") or event.is_action_pressed("throw") or event.is_action_pressed("look") or event.is_action_pressed("activate"):
 		return true
 	return true
 
 func handle_inspect_input(event: InputEvent) -> bool:
-	if StatusData.has_status(_player_entity, "Blind"):
-		return false
 	var inspect_pressed: bool = false
 	if event is InputEventMouseButton:
 		inspect_pressed = event.button_index == MOUSE_BUTTON_RIGHT and event.pressed
@@ -4492,12 +4430,12 @@ func handle_inspect_input(event: InputEvent) -> bool:
 	var entries: Array[Dictionary] = _build_inspect_entries()
 	if entries.is_empty():
 		_reset_inspect_mode()
-		if not inventory.is_empty():
+		if not PlayerData.inventory.is_empty():
 			show_inventory = true
 			inspect_item_selection_active = true
 			inspect_mode = false
 			inspect_description = ""
-		redraw.emit()
+		redraw_status.emit()
 		return true
 	inspect_item_selection_active = false
 	var signature: String = _inspect_signature(entries)
@@ -4514,7 +4452,8 @@ func handle_inspect_input(event: InputEvent) -> bool:
 	else:
 		inspect_mode = true
 		inspect_description = str(_inspect_entries[_inspect_entry_index].get("description", ""))
-	redraw.emit()
+		inspect_changed.emit()
+	redraw_status.emit()
 	return true
 
 func _bresenham_line(start: Vector2i, finish: Vector2i) -> Array[Vector2i]:
@@ -4538,6 +4477,26 @@ func _bresenham_line(start: Vector2i, finish: Vector2i) -> Array[Vector2i]:
 			error += delta_x
 			y += step_y
 	return points
+
+func _clear_path_to(target: Vector2i) -> bool:
+	# Check that there's an uninterrupted line of passable tiles from player to target
+	var path: Array[Vector2i] = _bresenham_line(player_pos, target)
+	for position in path:
+		if position == player_pos or position == target:
+			continue
+		var terrain: TerrainData.Terrain = grid[position]
+		# Check if tile is passable for the player (considering flying, swimming, etc.)
+		var is_passable: bool = terrain.passable
+		if not is_passable and not _player_entity.has_trait("Flying"):
+			# Check if it's water and player can swim
+			if not (_player_entity.has_trait("Aquatic") or _player_entity.has_trait("Amphibious")) and terrain.terrain_name.ends_with(" lake"):
+				is_passable = false
+			# Check deep lake for flying
+			elif terrain.terrain_name == "deep lake" and not _player_entity.has_trait("Flying"):
+				is_passable = false
+		if not is_passable:
+			return false
+	return true
 
 func _preview_grenade_radius(grenade: Item) -> int:
 	return maxi(0, grenade.enchantment) + 4
@@ -4627,10 +4586,10 @@ func _grenade_flash_color(color_name: String) -> int:
 			return 8
 
 func _refresh_throw_trajectory_preview() -> void:
-	if throw_inventory_index < 0 or throw_inventory_index >= inventory.size():
+	if throw_inventory_index < 0 or throw_inventory_index >= PlayerData.inventory.size():
 		return
 	var target_position: Vector2i = hover_tile
-	var projectile: Item = inventory[throw_inventory_index]
+	var projectile: Item = PlayerData.inventory[throw_inventory_index]
 	if player_pos.distance_to(target_position) > float(_throw_range(projectile)):
 		return
 	for position: Vector2i in _bresenham_line(player_pos, target_position):
@@ -4854,7 +4813,7 @@ func move_player(dx: int, dy: int, cost: int, from_auto_walk: bool = false) -> b
 		return true
 	_prepare_environment_turn(_player_entity)
 	_player_entity.set_flag("_environment_turn_prepared")
-	if int(_player_entity.health) <= 0:
+	if _player_entity.health <= 0:
 		return false
 	if (dx != 0 or dy != 0) and not from_auto_walk:
 		cancel_auto_walk()
@@ -4908,11 +4867,11 @@ func move_player(dx: int, dy: int, cost: int, from_auto_walk: bool = false) -> b
 	if target.x < 0 or target.x >= MAP_W or target.y < 0 or target.y >= MAP_H:
 		return false
 	if intended_direction.x != 0 and intended_direction.y != 0:
-		var origin_is_hazardous: bool = _is_hazardous_terrain(grid[player_pos])
+		var origin_is_hazardous: bool = _is_hazardous_for_creature(_player_entity, grid[player_pos])
 		var horizontal_tile: TerrainData.Terrain = grid[player_pos + Vector2i(intended_direction.x, 0)]
 		var vertical_tile: TerrainData.Terrain = grid[player_pos + Vector2i(0, intended_direction.y)]
-		var horizontal_passable: bool = horizontal_tile.passable or (origin_is_hazardous and _is_hazardous_terrain(horizontal_tile))
-		var vertical_passable: bool = vertical_tile.passable or (origin_is_hazardous and _is_hazardous_terrain(vertical_tile))
+		var horizontal_passable: bool = horizontal_tile.passable or (origin_is_hazardous and _is_hazardous_for_creature(_player_entity, horizontal_tile))
+		var vertical_passable: bool = vertical_tile.passable or (origin_is_hazardous and _is_hazardous_for_creature(_player_entity, vertical_tile))
 		if not horizontal_passable and not vertical_passable:
 			return false
 	var target_has_living_creature: bool = _creature_at(target) and creature[target].health > 0
@@ -4922,8 +4881,8 @@ func move_player(dx: int, dy: int, cost: int, from_auto_walk: bool = false) -> b
 			stair_move_cost = roundi(float(stair_move_cost) * 1.5)
 		return _travel_via_stairs(grid[target], stair_move_cost)
 	var target_tile: TerrainData.Terrain = grid[target]
-	if _is_hazardous_terrain(target_tile):
-		if not _player_can_enter_hazard(target):
+	if _is_hazardous_for_creature(_player_entity, target_tile):
+		if _has_safe_player_move():
 			return false
 	elif not target_tile.passable:
 		return false
@@ -5000,11 +4959,12 @@ func move_player(dx: int, dy: int, cost: int, from_auto_walk: bool = false) -> b
 			break
 	if StatusData.has_status(_player_entity, "Burning"): 
 		_ignite_flammable_tile(player_pos)
-	for entity_value: Variant in creature.values():
-		var moved_observer: Creature = entity_value
+	for moved_observer: Creature in creature.values():
 		if not moved_observer is PlayerCreature:
 			moved_observer.visible_tiles = _compute_fov(moved_observer)
 			_update_creature_awareness(moved_observer)
+	var inventory = PlayerData.inventory
+	var MAX_INVENTORY = PlayerData.MAX_INVENTORY
 	if target in item:
 		var picked_item: Item = item[target]
 		if picked_item is LyricalOrblet:
@@ -5021,6 +4981,8 @@ func move_player(dx: int, dy: int, cost: int, from_auto_walk: bool = false) -> b
 			_play_sound("item")
 			_append_message("You pick up %s." % _item_dp(picked_item))
 			_show_tutorial_once("item_pickup")
+			if show_inventory:
+				redraw_status.emit()
 			var picked_item_type: String = picked_item.get_type()
 			if picked_item_type in ["weapon", "armor"]:
 				_show_tutorial_once("weapon_armor_pickup")
@@ -5046,9 +5008,9 @@ func _inventory_index_from_key(event: InputEventKey) -> int:
 	return -1
 
 func _equip_inventory_item(inventory_index: int) -> void:
-	if inventory_index < 0 or inventory_index >= inventory.size():
+	if inventory_index < 0 or inventory_index >= PlayerData.inventory.size():
 		return
-	var selected_item: Item = inventory[inventory_index]
+	var selected_item: Item = PlayerData.inventory[inventory_index]
 	var equipped: bool = false
 	match selected_item.get_type():
 		"weapon":
@@ -5057,7 +5019,8 @@ func _equip_inventory_item(inventory_index: int) -> void:
 			equipped = PlayerData.equip_armor(_player_entity, inventory_index)
 	if equipped:
 		equip_selection_active = false
-		redraw.emit()
+		redraw_status.emit()
+		_adjust_delay(_player_entity, _player_entity.move_speed)
 		get_viewport().set_input_as_handled()
 
 func handle_equip_input(event: InputEvent) -> bool:
@@ -5065,11 +5028,11 @@ func handle_equip_input(event: InputEvent) -> bool:
 		return false
 	if event.keycode == KEY_ESCAPE or event.physical_keycode == KEY_ESCAPE:
 		equip_selection_active = false
-		redraw.emit()
+		redraw_status.emit()
 		get_viewport().set_input_as_handled()
 		return true
 	var inventory_index: int = _inventory_index_from_key(event)
-	if inventory_index >= 0 and inventory_index < inventory.size():
+	if inventory_index >= 0 and inventory_index < PlayerData.inventory.size():
 		_equip_inventory_item(inventory_index)
 	return true
 
@@ -5128,9 +5091,9 @@ func _nearest_available_target(targets: Array[Vector2i]) -> Vector2i:
 
 func _available_throw_target_positions(inventory_index: int) -> Array[Vector2i]:
 	var targets: Array[Vector2i] = _visible_enemy_positions()
-	if inventory_index < 0 or inventory_index >= inventory.size():
+	if inventory_index < 0 or inventory_index >= PlayerData.inventory.size():
 		return []
-	var projectile: Item = inventory[inventory_index]
+	var projectile: Item = PlayerData.inventory[inventory_index]
 	var max_range: float = _throw_range(projectile)
 	for target_index: int in range(targets.size() - 1, -1, -1):
 		if player_pos.distance_to(targets[target_index]) > max_range:
@@ -5318,13 +5281,12 @@ func _handle_target_mode_input(event: InputEventKey) -> bool:
 	return true
 
 func _remove_inventory_item(inventory_index: int) -> Item:
-	var removed_item: Item = inventory[inventory_index]
-	inventory.remove_at(inventory_index)
+	var removed_item: Item = PlayerData.inventory[inventory_index]
+	PlayerData.inventory.remove_at(inventory_index)
 	if PlayerData.equipped_weapon > inventory_index:
 		PlayerData.equipped_weapon -= 1
 	if PlayerData.equipped_armor > inventory_index:
 		PlayerData.equipped_armor -= 1
-	_player_entity.inventory = inventory
 	return removed_item
 
 func _unequip_delay_for_item(inventory_index: int) -> int:
@@ -5343,7 +5305,7 @@ func _spend_player_action_delay(delay: int, action: String = "wait") -> void:
 		return
 	_prepare_environment_turn(_player_entity)
 	_player_entity.set_flag("_environment_turn_prepared")
-	if int(_player_entity.health) <= 0:
+	if _player_entity.health <= 0:
 		redraw.emit()
 		return
 	_apply_action_statuses(_player_entity, action)
@@ -5354,9 +5316,9 @@ func _advance_player_action(adjusted_delay: int) -> void:
 	if not _player_entity.has_flag("_environment_turn_prepared"):
 		_prepare_environment_turn(_player_entity)
 		_player_entity.set_flag("_environment_turn_prepared")
-	if int(_player_entity.health) <= 0:
+	redraw.emit()
+	if _player_entity.health <= 0:
 		_player_entity.set_flag("_environment_turn_prepared", false)
-		redraw.emit()
 		return
 	_player_entity.set_flag("_defer_environment_advance")
 	_player_entity.last_action_cost = _advance_entity_time(_player_entity, adjusted_delay, true)
@@ -5364,19 +5326,17 @@ func _advance_player_action(adjusted_delay: int) -> void:
 	_player_entity.set_flag("_environment_turn_prepared", false)
 	turn_queue.sort_custom(_sort_by_time)
 	_recompute_all_fov()
-	redraw.emit()
 	_process_npc_turns()
 
 func _drop_inventory_item(inventory_index: int) -> void:
 	_prepare_environment_turn(_player_entity)
 	_player_entity.set_flag("_environment_turn_prepared")
-	if int(_player_entity.health) <= 0:
+	if _player_entity.health <= 0:
 		return
-	if inventory_index < 0 or inventory_index >= inventory.size():
+	if inventory_index < 0 or inventory_index >= PlayerData.inventory.size():
 		return
 	if item.has(player_pos):
 		_append_message("There is already an item here.")
-		redraw.emit()
 		return
 	var move_delay: int = _player_entity.move_speed
 	var equipment_delay: int = _unequip_delay_for_item(inventory_index)
@@ -5388,6 +5348,7 @@ func _drop_inventory_item(inventory_index: int) -> void:
 	_append_message("You drop %s." % _item_dp(dropped_item, true))
 	drop_selection_active = false
 	_advance_player_action(action_delay)
+	redraw_status.emit()
 
 func _throw_range(projectile: Item) -> int:
 	var base_range: int = 5 + int(PlayerData.stats[PlayerData.Stat.STRENGTH])
@@ -5397,7 +5358,7 @@ func _throw_range(projectile: Item) -> int:
 
 func _nearest_free_item_tile(origin: Vector2i, require_visible: bool = true) -> Vector2i:
 	var origin_tile: TerrainData.Terrain = grid[origin]
-	if not item.has(origin) and not _is_hazardous_terrain(origin_tile) and origin_tile.passable:
+	if not item.has(origin) and not _is_hazardous_for_creature(_player_entity, origin_tile) and origin_tile.passable:
 		return origin
 	var visited: Dictionary[Vector2i, bool] = {origin: true}
 	var frontier: Array[Vector2i] = [origin]
@@ -5411,7 +5372,7 @@ func _nearest_free_item_tile(origin: Vector2i, require_visible: bool = true) -> 
 					continue
 				visited[neighbor] = true
 				var neighbor_tile: TerrainData.Terrain = grid[neighbor]
-				if not item.has(neighbor) and not _is_hazardous_terrain(neighbor_tile) and neighbor_tile.passable:
+				if not item.has(neighbor) and not _is_hazardous_for_creature(_player_entity, neighbor_tile) and neighbor_tile.passable:
 					return neighbor
 				next_frontier.append(neighbor)
 		frontier = next_frontier
@@ -5508,18 +5469,20 @@ func _broadcast_noise_awareness(center: Vector2i, radius: int) -> void:
 func _throw_selected_item_at(target: Vector2i) -> void:
 	_prepare_environment_turn(_player_entity)
 	_player_entity.set_flag("_environment_turn_prepared")
-	if int(_player_entity.health) <= 0:
+	if _player_entity.health <= 0:
 		_end_target_mode()
 		return
 	var inventory_index: int = throw_inventory_index
-	if inventory_index < 0 or inventory_index >= inventory.size() or not is_in_view(target.x, target.y):
+	if inventory_index < 0 or inventory_index >= PlayerData.inventory.size() or not is_in_view(target.x, target.y):
 		return
-	var projectile: Item = inventory[inventory_index]
+	var projectile: Item = PlayerData.inventory[inventory_index]
 	var range_limit: int = _throw_range(projectile)
 	var distance: float = player_pos.distance_to(target)
 	if distance > float(range_limit):
 		_append_message("You can only throw %s in a range of %s." % [_item_dp(projectile, true), range_limit])
-		redraw.emit()
+		return
+	if not _clear_path_to(target):
+		_append_message("There is no clear path to throw %s." % [_item_dp(projectile, true)])
 		return
 	var move_delay: int = _player_entity.move_speed
 	var equipment_delay: int = _unequip_delay_for_item(inventory_index)
@@ -5628,6 +5591,7 @@ func _throw_selected_item_at(target: Vector2i) -> void:
 				_append_message("%s lands nearby." % _item_dp(projectile, true).capitalize())
 			_activate_altar_at(landing_position)
 	_advance_player_action(action_delay)
+	redraw_status.emit()
 
 func _activation_recharge_for_type(item_type: String) -> int:
 	if item_type == "wand":
@@ -5678,8 +5642,7 @@ func _apply_wand_effect(wand: Wand, target: Creature) -> void:
 			_apply_timed_activation_status(target, "Blind", enchantment + 3)
 
 func _remove_transference_link_for_entity(entity: Creature) -> void:
-	for link_id_value: Variant in _transference_links.keys():
-		var link_id: int = int(link_id_value)
+	for link_id: int in _transference_links.keys():
 		var linked_entities: Dictionary = _transference_links[link_id]
 		if entity == linked_entities.get("player", {}) or entity == linked_entities.get("target", {}):
 			_transference_links.erase(link_id)
@@ -5723,7 +5686,7 @@ func _repel_target_from_player(target: Creature, distance: int) -> void:
 			did_collide = true
 			break
 		var next_tile: TerrainData.Terrain = grid[next_position]
-		if not _is_hazardous_terrain(next_tile) and not next_tile.passable:
+		if not next_tile.passable:
 			blocked_count = distance - moved_count
 			did_collide = true
 			break
@@ -5767,7 +5730,7 @@ func _activate_charm_effect(charm: Charm) -> void:
 		"stoneskin":
 			_apply_timed_activation_status(_player_entity, "Protection", 2 * (enchantment + 2))
 		"magic":
-			_reduce_other_activation_cooldowns(inventory.find(charm), 20 * (enchantment + 1))
+			_reduce_other_activation_cooldowns(PlayerData.inventory.find(charm), 20 * (enchantment + 1))
 		"teleportation":
 			_teleport_player_randomly(10 * (enchantment + 1))
 		"repulsion":
@@ -5844,10 +5807,10 @@ func _reduce_other_activation_cooldowns(charm_inventory_index: int, reduction: i
 	if reduction <= 0:
 		return
 	var current_time: float = _player_entity.time
-	for inventory_index: int in range(inventory.size()):
+	for inventory_index: int in range(PlayerData.inventory.size()):
 		if inventory_index == charm_inventory_index:
 			continue
-		var inventory_item: Item = inventory[inventory_index]
+		var inventory_item: Item = PlayerData.inventory[inventory_index]
 		var item_type: String = inventory_item.get_type()
 		if item_type != "wand" and item_type != "charm":
 			continue
@@ -5856,7 +5819,7 @@ func _reduce_other_activation_cooldowns(charm_inventory_index: int, reduction: i
 func _teleport_player_randomly(radius: int) -> void:
 	_prepare_environment_turn(_player_entity)
 	_player_entity.set_flag("_environment_turn_prepared")
-	if int(_player_entity.health) <= 0:
+	if _player_entity.health <= 0:
 		return
 	var candidates: Array[Vector2i] = []
 	var unseen_candidates: Array[Vector2i] = []
@@ -5867,7 +5830,7 @@ func _teleport_player_randomly(radius: int) -> void:
 			if position == player_pos or player_pos.distance_squared_to(position) > radius_squared:
 				continue
 			var tile: TerrainData.Terrain = grid[position]
-			if position == stairs_up_pos or position == stairs_down_pos or _is_hazardous_terrain(tile) or not tile.passable or creature.has(position) or item.has(position):
+			if position == stairs_up_pos or position == stairs_down_pos or _is_hazardous_for_creature(_player_entity, tile) or not tile.passable or creature.has(position) or item.has(position):
 				continue
 			candidates.append(position)
 			if not _is_visible_to_any_creature(position):
@@ -5885,8 +5848,7 @@ func _teleport_player_randomly(radius: int) -> void:
 func _is_visible_to_any_creature(position: Vector2i) -> bool:
 	if visible_tiles.has(position):
 		return true
-	for entity_value: Variant in creature.values():
-		var entity: Creature = entity_value
+	for entity: Creature in creature.values():
 		var entity_visible_tiles: Dictionary = entity.visible_tiles
 		if entity_visible_tiles.has(position):
 			return true
@@ -5895,20 +5857,18 @@ func _is_visible_to_any_creature(position: Vector2i) -> bool:
 func _begin_item_activation(inventory_index: int) -> void:
 	_prepare_environment_turn(_player_entity)
 	_player_entity.set_flag("_environment_turn_prepared")
-	if int(_player_entity.health) <= 0:
+	if _player_entity.health <= 0:
 		return
-	if inventory_index < 0 or inventory_index >= inventory.size():
+	if inventory_index < 0 or inventory_index >= PlayerData.inventory.size():
 		return
-	var selected_item: Item = inventory[inventory_index]
+	var selected_item: Item = PlayerData.inventory[inventory_index]
 	var item_type: String = selected_item.get_type()
 	if item_type not in ["wand", "charm"]:
 		_append_message("You cannot activate that item.")
-		redraw.emit()
 		return
 	if not is_player_turn or processing_turns:
 		_append_message("You must wait for your turn to activate an item.")
 		activate_item_selection_active = false
-		redraw.emit()
 		return
 	var current_time: float = _player_entity.time
 	var ready_at: float = selected_item.cooldown
@@ -5921,7 +5881,7 @@ func _begin_item_activation(inventory_index: int) -> void:
 			_append_message("%s is still recharging." % [_item_dp(selected_item, true).capitalize()])
 			_spend_player_action_delay(_player_entity.move_speed, "activate")
 		activate_item_selection_active = false
-		redraw.emit()
+		redraw_status.emit()
 		return
 	if item_type == "wand":
 		_begin_wand_target_mode(inventory_index)
@@ -5938,23 +5898,24 @@ func _begin_item_activation(inventory_index: int) -> void:
 func _activate_selected_wand_at(target: Vector2i) -> void:
 	_prepare_environment_turn(_player_entity)
 	_player_entity.set_flag("_environment_turn_prepared")
-	if int(_player_entity.health) <= 0:
+	if _player_entity.health <= 0:
 		_end_target_mode()
 		return
 	var inventory_index: int = activate_inventory_index
-	if inventory_index < 0 or inventory_index >= inventory.size():
+	if inventory_index < 0 or inventory_index >= PlayerData.inventory.size():
 		_end_target_mode()
 		return
 	if not is_in_view(target.x, target.y) or not visible_tiles.has(target) or not creature.has(target):
 		_append_message("You must target a visible creature.")
-		redraw.emit()
+		return
+	if not _clear_path_to(target):
+		_append_message("There is no clear path to wave your wand at the target.")
 		return
 	var target_entity: Creature = creature[target]
 	if target_entity is PlayerCreature or target_entity.health <= 0 or StatusData.has_status(target_entity, "Invisible"):
 		_append_message("You must target a visible creature.")
-		redraw.emit()
 		return
-	var selected_item: Item = inventory[inventory_index]
+	var selected_item: Item = PlayerData.inventory[inventory_index]
 	if selected_item.get_type() != "wand":
 		_end_target_mode()
 		return
@@ -5982,10 +5943,10 @@ func _handle_item_selection_input(event: InputEventKey) -> bool:
 		drop_selection_active = false
 		throw_item_selection_active = false
 		activate_item_selection_active = false
-		redraw.emit()
+		redraw_status.emit()
 		return true
 	var inventory_index: int = _inventory_index_from_key(event)
-	if inventory_index < 0 or inventory_index >= inventory.size():
+	if inventory_index < 0 or inventory_index >= PlayerData.inventory.size():
 		return true
 	if equip_selection_active:
 		_equip_inventory_item(inventory_index)
@@ -6025,25 +5986,25 @@ func _input(event: InputEvent) -> void:
 	if event.is_action_pressed("activate"):
 		show_inventory = true
 		activate_item_selection_active = true
-		redraw.emit()
+		redraw_status.emit()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("equip"):
 		show_inventory = true
 		equip_selection_active = true
-		redraw.emit()
+		redraw_status.emit()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("drop"):
 		show_inventory = true
 		drop_selection_active = true
-		redraw.emit()
+		redraw_status.emit()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("throw"):
 		show_inventory = true
 		throw_item_selection_active = true
-		redraw.emit()
+		redraw_status.emit()
 		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("look"):
@@ -6054,7 +6015,7 @@ func _input(event: InputEvent) -> void:
 		show_inventory = !show_inventory
 		if not show_inventory:
 			_reset_inspect_mode()
-		redraw.emit()
+		redraw_status.emit()
 		return
 	if not is_player_turn or processing_turns:
 		return
@@ -6067,7 +6028,6 @@ func _input(event: InputEvent) -> void:
 		cancel_auto_walk()
 		if not _attack_adjacent_enemy():
 			_append_message("There is no adjacent enemy to attack.")
-			redraw.emit()
 		get_viewport().set_input_as_handled()
 		return
 	var direction: Vector2i = _movement_direction(event)
@@ -6125,7 +6085,7 @@ func _rest_player() -> void:
 		stop_reason = "an enemy came into view"
 	else:
 		for _rest_turn: int in range(REST_MAX_TURNS):
-			if not is_player_turn or processing_turns or int(_player_entity.health) <= 0:
+			if not is_player_turn or processing_turns or _player_entity.health <= 0:
 				break
 			_spend_player_action_delay(_player_entity.move_speed, "wait")
 			turns_resting += 1
@@ -6144,7 +6104,7 @@ func _rest_player() -> void:
 	_resting = false
 	_player_entity.set_flag("_rest_started_injured", false)
 	_recompute_all_fov()
-	if int(_player_entity.health) > 0:
+	if _player_entity.health > 0:
 		_append_message("You stop resting because %s." % stop_reason + (" (%d turns)." % turns_resting if stop_reason == "the time limit" else ""))
 	redraw.emit()
 

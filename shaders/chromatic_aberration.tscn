@@ -1,0 +1,16 @@
+[gd_scene format=3 uid="uid://mavlbfvvtily"]
+
+[ext_resource type="Shader" uid="uid://clnnjl5fd1qg8" path="res://shaders/chromatic_aberration_2d.gdshader" id="1_qqy3j"]
+
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_h0ugh"]
+shader = ExtResource("1_qqy3j")
+shader_parameter/intensity = 0.030000001425
+
+[node name="ChromaticAberration" type="ColorRect" unique_id=1562134091]
+material = SubResource("ShaderMaterial_h0ugh")
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2

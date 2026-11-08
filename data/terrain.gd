@@ -188,9 +188,9 @@ class Terrain:
 			var current: Dictionary = environment_grid[position]
 			is_steam = current.has("type") and current["type"] == "steam"
 		if not environment_grid.has(position) or not is_steam:
-			environment_grid[position] = {"type": "steam", "concentration": 100, "burns_terrain": false}
+			environment_grid[position] = {"type": "steam", "concentration": 50, "burns_terrain": false}
 		timer = randi_range(2000, 4000)
-			
+		
 	func evaporate(terrain_grid: Dictionary[Vector2i, Terrain], _environment_grid: Dictionary, position: Vector2i) -> void:
 		terrain_grid[position] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
 		
@@ -207,21 +207,21 @@ static var TILE_DATA: Dictionary = {
 	TileType.FLOOR: Terrain.new("cave floor", ".", false, true, false, 7, 0, "the", Flammability.LIMITED_FIRE, 1.0, false),
 	TileType.STAIRS_UP: Terrain.new("stairs leading up", ">", true, true, false, 11, 8, "", Flammability.NO_FIRE),
 	TileType.STAIRS_DOWN: Terrain.new("stairs leading down", "<", true, true, false, 11, 8, "", Flammability.NO_FIRE),
-	TileType.ALTAR_ENCHANT: Terrain.new("altar of enchantment", "=", false, true, false, 12, 0, "an", Flammability.NO_FIRE, 1.0, false, "altar", "altar_enchant"),
-	TileType.ALTAR_POWER: Terrain.new("altar of sacrifice", "=", false, true, false, 11, 0, "an", Flammability.NO_FIRE, 1.0, false, "altar", "altar_power"),
-	TileType.ALTAR_ID: Terrain.new("altar of enlightenment", "=", false, true, false, 14, 0, "an", Flammability.NO_FIRE, 1.0, false, "altar", "altar_id"),
-	TileType.ALTAR_TRANSFORM: Terrain.new("altar of transformation", "=", false, true, false, 13, 0, "an", Flammability.NO_FIRE, 1.0, false, "altar", "altar_transform"),
+	TileType.ALTAR_ENCHANT: Terrain.new("altar of enchantment", "±", false, true, false, 12, 0, "an", Flammability.NO_FIRE, 1.0, false, "altar", "altar_enchant"),
+	TileType.ALTAR_POWER: Terrain.new("altar of sacrifice", "=", false, true, false, 13, 0, "an", Flammability.NO_FIRE, 1.0, false, "altar", "altar_power"),
+	TileType.ALTAR_ID: Terrain.new("altar of enlightenment", "⍛", false, true, false, 14, 0, "an", Flammability.NO_FIRE, 1.0, false, "altar", "altar_id"),
+	TileType.ALTAR_TRANSFORM: Terrain.new("altar of transformation", "≠", false, true, false, 11, 0, "an", Flammability.NO_FIRE, 1.0, false, "altar", "altar_transform"),
 	TileType.MOSS: Terrain.new("mossy ground", ".", false, true, false, 15, 1, "the", Flammability.FULL_FIRE, 1.0, false),
 	TileType.TREE: Terrain.new("tree", "Ψ", true, false, true, 15, 1, "a", Flammability.FULL_FIRE),
 	TileType.SHRUB: Terrain.new("shrubbery", "ო", true, true, false, 15, 1, "a", Flammability.FULL_FIRE, 2.0, true),
 	TileType.WATER_SHALLOW: Terrain.new("shallow lake", "≈", false, true, false, 15, 12, "a", Flammability.EXTINGUISH_STEAM, 2.0, true, "walking", "water_shallow_entered"),
-	TileType.WATER_DEEP: Terrain.new("deep lake", "≈", false, false, true, 0, 12, "a", Flammability.EXTINGUISH_STEAM, 2.0, false, "walking", "water_deep_entered"),
+	TileType.WATER_DEEP: Terrain.new("deep lake", "≈", false, true, true, 0, 12, "a", Flammability.EXTINGUISH_STEAM, 2.0, false, "walking", "water_deep_entered"),
 	TileType.ICE: Terrain.new("frozen lake", "=", false, true, false, 12, 15, "a", Flammability.EXTINGUISH_MELT_TO_WATER),
 	TileType.SNOW: Terrain.new("snowy ground", ".", false, true, false, 0, 15, "the", Flammability.EXTINGUISH_MELT_TO_FLOOR, 1.5, true),
 	TileType.SLIME_PIT: Terrain.new("slime pit", "░", false, true, false, 0, 9, "a", Flammability.NO_FIRE, 2.0, true),
 	TileType.GLOWING_POOL: Terrain.new("glowing pool", "0", false, true, false, 7, 13, "a", Flammability.NO_FIRE, 1.5, true, "walking", "glowing_pool_entered"),
-	TileType.GEYSER: Terrain.new("steam geyser", "ϒ", false, false, true, 15, 12, "a", Flammability.EXTINGUISH_STEAM, INF, true, "timer", "erupt"),
-	TileType.LAVA: Terrain.new("lava", ",", false, false, true, 0, 10, "some", Flammability.NO_FIRE, 2.0, false, "walking_or_flying", "lava_entered"),
+	TileType.GEYSER: Terrain.new("steam geyser", "ϒ", false, true, true, 15, 12, "a", Flammability.EXTINGUISH_STEAM, INF, true, "timer", "erupt"),
+	TileType.LAVA: Terrain.new("lava", ",", false, true, true, 0, 10, "some", Flammability.NO_FIRE, 2.0, false, "walking_or_flying", "lava_entered"),
 	TileType.STALAGMITE: Terrain.new("stalagmite", "Λ", false, false, true, 7, 0, "a", Flammability.NO_FIRE),
 	TileType.ASHES: Terrain.new("ashes", ".", false, true, false, 7, 8, "some", Flammability.NO_FIRE, 1.0, true),
 	TileType.BARRICADE: Terrain.new("wooden wall", "#", true, false, true, 7, 0, "a", Flammability.FULL_FIRE),

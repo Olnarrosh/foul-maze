@@ -42,15 +42,15 @@ func get_description() -> String:
 	elif acc_mod < 0:
 		qualities.append("imprecise")
 	if not qualities.is_empty():
-		description += " Its attacks are %s." % " and ".join(qualities)
+		description += "\nIts attacks are %s." % " and ".join(qualities)
 	var strength_difference: int = str_req - int(PlayerData.stats[PlayerData.Stat.STRENGTH])
 	if strength_difference > 0:
-		description += " You need %d more strength to use it effectively." % strength_difference
+		description += "\nYou need %d more strength to use it effectively." % strength_difference
 	var weapon_id_status: int = get_id_status()
 	if ego and weapon_id_status != ItemData.ID_STATUS.NO_ID:
 		var weapon_ego_name: String = ego
 		var weapon_ego_effect: String = _ego_effect_description()
-		description += " It is imbued with the power of %s, which %s." % [weapon_ego_name, weapon_ego_effect if not weapon_ego_effect.is_empty() else ""]
+		description += "\nIt is imbued with the power of %s, which %s." % [weapon_ego_name, weapon_ego_effect if not weapon_ego_effect.is_empty() else ""]
 	return description
 
 func get_item_name() -> String:

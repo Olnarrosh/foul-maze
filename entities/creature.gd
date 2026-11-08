@@ -23,7 +23,6 @@ var traits: Array[String]
 var attack_str: Array[String]
 var status: Array[StatusData.Status]
 var visible_tiles: Dictionary[Vector2i, bool]
-var known_tiles: Dictionary[Vector2i, TerrainData.Terrain]
 var resistances: Array[String]
 var environment_checked_time: float = -1.0
 var sleeping_regen: bool = false
@@ -45,7 +44,6 @@ func _init() -> void:
 	regen_progress = 0
 	status = []
 	visible_tiles = {}
-	known_tiles = {}
 	time = 0
 	delay = randi() % maxi(1, move_speed)
 

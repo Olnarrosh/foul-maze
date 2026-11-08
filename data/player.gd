@@ -12,6 +12,8 @@ static func reset_run_stats() -> void:
 	run_highest_level = 1
 	run_enemies_killed = 0
 
+static var inventory: Array[Item] = []
+const MAX_INVENTORY: int = 26
 static var wand_recharge_time: int = 400
 static var charm_recharge_time: int = 1000
 static var equipped_weapon: int = -1
@@ -53,6 +55,7 @@ static func init_player(race: Race) -> PlayerCreature:
 		Stat.INTELLIGENCE: 1,
 		Stat.CONSTITUTION: 1
 	}
+	inventory = []
 	# Recharge is measured in the same action-time units as player.time.
 	wand_recharge_time = 400
 	charm_recharge_time = 1000
@@ -77,9 +80,9 @@ static func init_player(race: Race) -> PlayerCreature:
 		var item: Item = Item.create_from_subtype(type_str, subtype, 0)
 		if item != null:
 			item.identify_fully()
-			player.inventory.append(item)
+			inventory.append(item)
 			# Auto-equip weapons and armor
-			var idx: int = player.inventory.size() - 1
+			var idx: int = inventory.size() - 1
 			if type_str == "weapon":
 				equip_weapon(player, idx)
 			elif type_str == "armor":
@@ -113,7 +116,6 @@ static func change_stat(stat: Stat, change: int, player: PlayerCreature) -> void
 		_equip_armor(player, armor_index)
 
 static func equip_weapon(player: PlayerCreature, inventory_index: int) -> bool:
-	var inventory: Array = player.inventory
 	if inventory_index < 0 or inventory_index >= inventory.size():
 		return false
 	var weapon: Item = inventory[inventory_index]
@@ -128,7 +130,6 @@ static func equip_weapon(player: PlayerCreature, inventory_index: int) -> bool:
 	return true
 
 static func equip_armor(player: PlayerCreature, inventory_index: int) -> bool:
-	var inventory: Array = player.inventory
 	if inventory_index < 0 or inventory_index >= inventory.size():
 		return false
 	var armor: Item = inventory[inventory_index]
@@ -152,21 +153,20 @@ static func _weapon_ego_bonus(weapon: Item, ego_name: String) -> int:
 		return 0
 	return int(weapon.enchantment)
 
-static func equipped_weapon_ego_bonus(player: PlayerCreature, ego_name: String) -> int:
-	var weapon: Item = _inventory_item(player, equipped_weapon)
+static func equipped_weapon_ego_bonus(ego_name: String) -> int:
+	var weapon: Item = _inventory_item(equipped_weapon)
 	return _weapon_ego_bonus(weapon, ego_name.to_lower())
 
 static func _weapon_strength_penalty(weapon: Item) -> int:
 	return maxi(0, weapon.str_req - int(stats[Stat.STRENGTH]))
 
-static func _inventory_item(player: PlayerCreature, inventory_index: int) -> Item:
-	var inventory: Array = player.inventory
+static func _inventory_item(inventory_index: int) -> Item:
 	if inventory_index < 0 or inventory_index >= inventory.size():
 		return null
 	return inventory[inventory_index]
 
 static func _equip_weapon(player: PlayerCreature, inventory_index: int) -> void:
-	var weapon: Weapon = _inventory_item(player, inventory_index)
+	var weapon: Weapon = _inventory_item(inventory_index)
 	if not weapon:
 		return
 	equipped_weapon = inventory_index
@@ -178,7 +178,7 @@ static func _equip_weapon(player: PlayerCreature, inventory_index: int) -> void:
 	weapon.speed_ego_reduction_applied = applied_speed_reduction
 
 static func _unequip_weapon(player: PlayerCreature, inventory_index: int) -> void:
-	var weapon: Weapon = _inventory_item(player, inventory_index)
+	var weapon: Weapon = _inventory_item(inventory_index)
 	if weapon:
 		player.accuracy -= int(weapon.acc_mod) - 10 * _weapon_strength_penalty(weapon) + 5 * _weapon_ego_bonus(weapon, "precision")
 		player.attack_speed += int(weapon.speed_ego_reduction_applied)
@@ -200,12 +200,12 @@ static func _armor_ego_bonus(armor: Item, ego_name: String) -> int:
 		return 0
 	return int(armor.enchantment)
 
-static func equipped_armor_ego_bonus(player: PlayerCreature, ego_name: String) -> int:
-	var armor: Item = _inventory_item(player, equipped_armor)
+static func equipped_armor_ego_bonus(ego_name: String) -> int:
+	var armor: Item = _inventory_item(equipped_armor)
 	return _armor_ego_bonus(armor, ego_name.to_lower())
 
 static func _equip_armor(player: PlayerCreature, inventory_index: int) -> void:
-	var armor: Armor = _inventory_item(player, inventory_index)
+	var armor: Armor = _inventory_item(inventory_index)
 	if not armor:
 		return
 	equipped_armor = inventory_index
@@ -223,7 +223,7 @@ static func _equip_armor(player: PlayerCreature, inventory_index: int) -> void:
 		player.max_health = maxi(1, int(player.get("max_health")) + health_bonus)
 
 static func _unequip_armor(player: PlayerCreature, inventory_index: int) -> void:
-	var armor: Armor = _inventory_item(player, inventory_index)
+	var armor: Armor = _inventory_item(inventory_index)
 	if armor:
 		var delay: int = _armor_delay_penalty(armor)
 		player.move_speed += int(armor.speed_ego_reduction_applied)

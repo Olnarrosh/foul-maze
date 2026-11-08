@@ -2,7 +2,6 @@ class_name PlayerCreature
 extends Creature
 
 var acc_thrown: int
-var inventory: Array[Item]
 
 func _init(position: Vector2i):
 	creature_name = "you"
@@ -20,7 +19,6 @@ func _init(position: Vector2i):
 	sight_range = 10
 	description = "You are here."
 	category = CreatureData.CreatureCategory.HUMANOID
-	inventory = []
 	traits = []
 	pos = position
 	super()

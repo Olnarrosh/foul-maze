@@ -23,14 +23,14 @@ func get_description() -> String:
 	var delay_penalty: int = maxi(0, delay - 2 * constitution)
 	var desc: String = "A suit of armor made of %s. It provides %d armor." % [description, get_display_combat_value()]
 	if delay_penalty > 0:
-		desc += " Wearing it slows you down by %d%%. You need %s more constitution" % [roundi(float(delay_penalty) * 5.0), ceili(delay_penalty / 2.0)]
+		desc += "\nWearing it slows you down by %d%%. You need %s more constitution" % [roundi(float(delay_penalty) * 5.0), ceili(delay_penalty / 2.0)]
 	else:
-		desc += " You are strong enough"
+		desc += "\nYou are strong enough"
 	desc += " to wear it without being encumbered."
 	if ego and id_status != ItemData.ID_STATUS.NO_ID:
 		var armor_ego_name: String = ego
 		var armor_ego_effect: String = _ego_effect_description()
-		desc += " It is imbued with the power of %s, which %s." % [armor_ego_name, armor_ego_effect if not armor_ego_effect.is_empty() else ""]
+		desc += "\nIt is imbued with the power of %s, which %s." % [armor_ego_name, armor_ego_effect if not armor_ego_effect.is_empty() else ""]
 	return desc
 
 func get_item_name() -> String:
