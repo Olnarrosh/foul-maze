@@ -32,3 +32,44 @@ func get_item_name() -> String:
 	if enchantment != 0:
 		full_name += " +%d" % enchantment
 	return full_name
+
+func grenade_flash_color() -> int:
+	match name_unid:
+		"crimson":
+			return 10
+		"vermilion":
+			return 10
+		"magenta":
+			return 13
+		"amaranthine":
+			return 2
+		"mauve":
+			return 13
+		"periwinkle":
+			return 14
+		"eburnean":
+			return 15
+		"ochre":
+			return 3
+		"chartreuse":
+			return 9
+		"croceous":
+			return 11
+		"ecru":
+			return 7
+		"verdigris":
+			return 6
+		"khaki":
+			return 1
+		"azure":
+			return 12
+		"mazarine":
+			return 4
+		"filemot":
+			return 3
+		"perse":
+			return 5
+		"atrous":
+			return 0
+		_:
+			return 8

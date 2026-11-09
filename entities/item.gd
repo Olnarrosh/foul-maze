@@ -102,8 +102,8 @@ static func create_from_subtype(item_kind: String, subtype: Dictionary, level: i
 	match item_kind:
 		"weapon":
 			var ego: Dictionary = {}
-			if level > 0 and randf() < 2.0 * float(level) / 100.0:
-				var eligible_egos: Array[Dictionary] = ItemData.get_weapon_egos_for_subtype(str(subtype.name))
+			if level > 0 and randf() < level / 50.0:
+				var eligible_egos: Array[Dictionary] = ItemData.get_weapon_egos_for_subtype(subtype.name)
 				if not eligible_egos.is_empty():
 					ego = eligible_egos.pick_random()
 			var weapon: Weapon = Weapon.new(subtype, ego)
@@ -111,10 +111,10 @@ static func create_from_subtype(item_kind: String, subtype: Dictionary, level: i
 			weapon.damage += weapon.enchantment
 			return weapon
 		"armor":
-			var armor_ego: Dictionary = {}
-			if level > 0 and randf() < 2.0 * float(level) / 100.0:
-				armor_ego = ItemData.ARMOR_EGOS.pick_random().duplicate(true)
-			var armor: Armor = Armor.new(subtype, armor_ego)
+			var ego: Dictionary = {}
+			if level > 0 and randf() < level / 50.0:
+				ego = ItemData.ARMOR_EGOS.pick_random()
+			var armor: Armor = Armor.new(subtype, ego)
 			armor.enchantment = _roll_melee_enchantment(level) if level > 0 else 0
 			armor.armor += armor.enchantment
 			return armor

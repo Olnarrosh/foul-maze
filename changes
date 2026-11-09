@@ -3,4 +3,5 @@
 - The types of altars are now differentiated not only by their colors but also their glyphs.
 - Throwing an item or activating a wand now needs a clear line to the target.
 - Enemies treat all tiles as previously seen.
-- Geysers should no longer spawn in places where they block passages.
+- Geysers no longer spawn in places where they block passages.
+- Geysers will now erupt, and puddles evaporate.

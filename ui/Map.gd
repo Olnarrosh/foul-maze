@@ -152,7 +152,7 @@ signal sound_requested(sound_name: String)
 var _run_root: Map
 var lyrical_orblet_found: bool = false
 
-var floor_tiles: Array
+var floor_tiles: Array[Vector2i]
 
 func _creature_ignores_terrain_cost(entity: Creature) -> bool:
 	return entity.has_trait("Flying")
@@ -1246,17 +1246,17 @@ func _connect_floors() -> void:
 	floor_tiles.shuffle()
 	
 	# Connect unreachable tiles
-	var reachable = _find_reachable(start_tile, {})
-	for tile in floor_tiles:
+	var reachable: Dictionary[Vector2i, bool] = _find_reachable(start_tile, {})
+	for tile: Vector2i in floor_tiles:
 		if not tile in reachable:
-			var nearest = null
-			var stack := [tile]
-			var seen = {}
-			var steps = 0
-			while nearest == null:
+			var nearest: Vector2i = Vector2i.MIN
+			var stack: Array[Vector2i] = [tile]
+			var seen := {}
+			var steps := 0
+			while nearest == Vector2i.MIN:
 				steps += 1
 				@warning_ignore("confusable_local_declaration")
-				var current = stack.pop_front()
+				var current: Vector2i = stack.pop_front()
 				for dir in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
 					var neighbor: Vector2i = current + dir
 					if neighbor not in seen:
@@ -1267,11 +1267,11 @@ func _connect_floors() -> void:
 						seen[neighbor] = true
 				if steps > 100:
 					nearest = reachable.keys().pick_random()
-			var current = tile
+			var current := tile
 			while current != nearest:
 				reachable[current] = true
-				var dist_x = current.x - nearest.x
-				var dist_y = current.y - nearest.y
+				var dist_x := current.x - nearest.x
+				var dist_y := current.y - nearest.y
 				if dist_x == 0:
 					current.y -= sign(dist_y)
 				elif dist_y == 0:
@@ -1505,10 +1505,10 @@ func _creature_definitions_for_budget(max_danger: int, preferred_band: bool = fa
 	var candidates: Array[Dictionary] = []
 	if max_danger <= 0:
 		return candidates
-	var minimum_danger: int = maxi(1, ceili(float(max_danger) * 0.2)) if preferred_band else 0
-	var maximum_band_danger: int = floori(float(max_danger) * 0.4) if preferred_band else max_danger
+	var minimum_danger: int = maxi(1, ceili(max_danger * 0.2)) if preferred_band else 0
+	var maximum_band_danger: int = floori(max_danger * 0.4) if preferred_band else max_danger
 	for definition: Dictionary in CreatureData.creatures:
-		var danger: int = definition.get("danger", 1)
+		var danger: int = definition.get("danger", 0)
 		if danger < minimum_danger or danger > maximum_band_danger:
 			continue
 		if _available_spawn_tiles(definition, forbidden_tiles).is_empty():
@@ -1531,9 +1531,9 @@ func _spawn_creature_definition(definition: Dictionary, spawn_time: float, add_t
 	var spawn_tiles: Array[Vector2i] = _available_spawn_tiles(definition, forbidden_tiles)
 	if spawn_tiles.is_empty():
 		return null
-	var cluster_size: int = maxi(0, int(definition.get("cluster", 0)))
+	var cluster_size: int = maxi(0, definition.get("cluster", 0))
 	var matching_positions: Array[Vector2i] = []
-	var creature_name: String = str(definition.get("name", ""))
+	var creature_name: String = definition.get("name", "")
 	for existing_position: Vector2i in creature.keys():
 		var existing: Creature = creature[existing_position]
 		if existing.creature_name == creature_name and existing.health > 0:
@@ -1638,22 +1638,22 @@ func _place_lyrical_orblet() -> void:
 	item[free_tiles.pick_random()] = LyricalOrblet.new()
 
 func _active_transference_partner(target: Creature) -> Creature:
-	var current_time: float = maxf(float(environment_time), float(_player_entity.time))
+	var current_time: float = maxf(environment_time, _player_entity.time)
 	var expired_link_ids: Array[int] = []
 	for link_id: int in _transference_links.keys():
 		var linked_entities: Dictionary = _transference_links[link_id]
-		if current_time >= float(linked_entities.get("expires_at", 0.0)):
+		if current_time >= linked_entities["expires_at"]:
 			expired_link_ids.append(link_id)
 			continue
-		if target == linked_entities.get("player", {}):
-			return linked_entities.get("target", {})
-		if target == linked_entities.get("target", {}):
-			return linked_entities.get("player", {})
+		if target == linked_entities["player"]:
+			return linked_entities["target"]
+		if target == linked_entities["target"]:
+			return linked_entities["player"]
 	for expired_link_id: int in expired_link_ids:
 		var expired_link: Dictionary = _transference_links[expired_link_id]
 		_transference_links.erase(expired_link_id)
-		StatusData.remove_status(expired_link.get("player", {}), "Transference")
-		StatusData.remove_status(expired_link.get("target", {}), "Transference")
+		StatusData.remove_status(expired_link["player"], "Transference")
+		StatusData.remove_status(expired_link["target"], "Transference")
 	return null
 
 func _apply_sorcery_armor_cooldown_reduction(damage: int) -> void:
@@ -1664,7 +1664,7 @@ func _apply_sorcery_armor_cooldown_reduction(damage: int) -> void:
 	var ego: String = armor.ego
 	if ego != "sorcery":
 		return
-	var cooldown_reduction: int = maxi(0, int(armor.get("enchantment"))) * damage * 5
+	var cooldown_reduction: int = maxi(0, armor.enchantment) * damage * 5
 	if cooldown_reduction <= 0:
 		return
 	var current_time: float = _player_entity.time
@@ -1683,8 +1683,8 @@ func _heal_entity(target: Creature, amount: int, bypass_transference: bool = fal
 	if not bypass_transference:
 		var partner: Creature = _active_transference_partner(target)
 		if partner:
-			var original_share: int = ceili(float(healing) / 2.0)
-			var partner_share: int = floori(float(healing) / 2.0)
+			var original_share: int = ceili(healing / 2.0)
+			var partner_share: int = floori(healing / 2.0)
 			var healed_original: int = _heal_entity(target, original_share, true)
 			if partner_share > 0:
 				_heal_entity(partner, partner_share, true)
@@ -1705,8 +1705,8 @@ func _deal_damage(target: Creature, amount: int, damage_type: String = "physical
 	if not bypass_transference:
 		var transference_partner: Creature = _active_transference_partner(target)
 		if transference_partner:
-			var original_share: int = ceili(float(incoming_damage) / 2.0)
-			var partner_share: int = floori(float(incoming_damage) / 2.0)
+			var original_share: int = ceili(incoming_damage / 2.0)
+			var partner_share: int = floori(incoming_damage / 2.0)
 			var dealt_to_original: int = _deal_damage(target, original_share, damage_type, true)
 			if partner_share > 0:
 				_deal_damage(transference_partner, partner_share, damage_type, true)
@@ -1829,29 +1829,29 @@ func _advance_regeneration(entity: Creature, time_cost: int) -> void:
 	var regeneration_context: Dictionary = {"rate_factor": 1.0, "inverts_regeneration": false}
 	StatusData.trigger(entity, StatusData.EffectType.REGENERATION, regeneration_context)
 	if resting_regeneration:
-		regeneration_context.rate_factor = float(regeneration_context.get("rate_factor", 1.0)) * 3.0
+		regeneration_context.rate_factor = regeneration_context.rate_factor * 3.0
 	elif sleeping_regeneration:
-		regeneration_context.rate_factor = float(regeneration_context.get("rate_factor", 1.0)) * 2.0
-	if entity.has_trait("No Regeneration") and not bool(regeneration_context.get("inverts_regeneration", false)):
+		regeneration_context.rate_factor = regeneration_context.rate_factor * 2.0
+	if entity.has_trait("No Regeneration") and not regeneration_context.inverts_regeneration:
 		entity.regen_progress = 0.0
 		return
-	if entity.has_trait("Quick Regeneration") and not bool(regeneration_context.get("inverts_regeneration", false)):
-		regeneration_context.rate_factor = float(regeneration_context.get("rate_factor", 1.0)) * 5.0
-	var rate_factor: float = float(regeneration_context.get("rate_factor", 1.0))
+	if entity.has_trait("Quick Regeneration") and not regeneration_context.inverts_regeneration:
+		regeneration_context.rate_factor = regeneration_context.rate_factor * 5.0
+	var rate_factor: float = regeneration_context.rate_factor
 	var interval: float = float(REGEN_FULL_HEALTH_TIME) / float(maximum_health) / rate_factor
 	var progress: float = entity.regen_progress + time_cost
-	if current_health >= maximum_health and not bool(regeneration_context.get("inverts_regeneration", false)):
+	if current_health >= maximum_health and not regeneration_context.inverts_regeneration:
 		entity.regen_progress = 0.0
 		return
 	while progress >= interval:
 		progress -= interval
-		if bool(regeneration_context.get("inverts_regeneration", false)):
+		if regeneration_context.inverts_regeneration:
 			_deal_damage(entity, 1, "poison")
 		else:
 			_heal_entity(entity, 1)
 		if entity.health <= 0:
 			break
-	if entity.health >= maximum_health and not bool(regeneration_context.get("inverts_regeneration", false)):
+	if entity.health >= maximum_health and not regeneration_context.inverts_regeneration:
 		progress = 0.0
 		if resting_regeneration and entity.has_flag("_rest_started_injured"):
 			_rest_reached_full_health = true
@@ -1871,10 +1871,10 @@ func _environment_effect(position: Vector2i) -> Dictionary:
 	return effect if _environment_kind(effect) in ["steam", "smoke", "fire"] else {}
 
 func _environment_kind(effect: Dictionary) -> String:
-	return str(effect.get("type", ""))
+	return effect.get("type", "")
 
 func _environment_concentration(effect: Dictionary) -> int:
-	return int(effect.get("concentration", 0))
+	return effect.get("concentration", 0)
 
 func _environment_visible(position: Vector2i) -> bool:
 	var effect: Dictionary = _environment_effect(position)
@@ -1909,11 +1909,11 @@ func set_environment_effect(position: Vector2i, effect_type: String, concentrati
 	var current_concentration: int = _environment_concentration(current)
 	if not current.is_empty() and current_concentration > concentration:
 		return
-	if _environment_kind(current) == "fire" and effect_type != "fire" and bool(current.get("burns_terrain", false)):
+	if _environment_kind(current) == "fire" and effect_type != "fire" and current.get("burns_terrain", false):
 		grid[position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
 	var clamped_concentration: int = mini(ENVIRONMENT_MAX_CONCENTRATION, concentration)
-	var burns_terrain: bool = bool(current.get("burns_terrain", false)) if _environment_kind(current) == "fire" and effect_type != "fire" else effect_type == "fire" and grid[position].flammability == TerrainData.Flammability.FULL_FIRE
-	if _environment_kind(current) == "fire" and effect_type != "fire" and bool(current.get("burns_terrain", false)):
+	var burns_terrain: bool = current.get("burns_terrain", false) if _environment_kind(current) == "fire" and effect_type != "fire" else effect_type == "fire" and grid[position].flammability == TerrainData.Flammability.FULL_FIRE
+	if _environment_kind(current) == "fire" and effect_type != "fire" and current.get("burns_terrain", false):
 		grid[position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
 	environment[position] = {"type": effect_type, "concentration": clamped_concentration, "burns_terrain": burns_terrain}
 	redraw.emit()
@@ -2028,7 +2028,7 @@ func _process_creature_respawn() -> void:
 		next_respawn_time += HALF_RESPAWN_INTERVAL
 		return
 	var definition: Dictionary = eligible_definitions.pick_random()
-	var danger: int = int(definition.get("danger", 0))
+	var danger: int = definition.get("danger", 0)
 	var spawned: EnemyCreature = _spawn_creature_definition(definition, next_respawn_time, true, forbidden_tiles)
 	if spawned == null:
 		next_respawn_time += HALF_RESPAWN_INTERVAL
@@ -2084,7 +2084,7 @@ func _prepare_environment_turn(entity: Creature) -> void:
 	# The environment_checked_time guard prevents frame-by-frame re-processing.
 	var turn_time: int = entity.time
 	_advance_environment_time(maxi(environment_time, turn_time))
-	if is_equal_approx(float(entity.environment_checked_time), float(turn_time)):
+	if is_equal_approx(entity.environment_checked_time, float(turn_time)):
 		return
 	entity.environment_checked_time = turn_time
 	_environment_start_turn(entity)
@@ -2117,7 +2117,7 @@ func _environment_start_turn(entity: Creature) -> void:
 func _adjust_delay(entity: Creature, delay: int) -> int:
 	var delay_context: Dictionary = {"delay": maxi(0, delay)}
 	StatusData.trigger(entity, StatusData.EffectType.DELAY, delay_context)
-	return maxi(1, roundi(float(delay_context.get("delay", delay)))) if delay > 0 else 0
+	return maxi(1, roundi(delay_context.delay)) if delay > 0 else 0
 
 func _record_armor_wear_time(entity: Creature, elapsed_time: int) -> void:
 	if entity != _player_entity or PlayerData.equipped_armor < 0 or PlayerData.equipped_armor >= PlayerData.inventory.size() or elapsed_time <= 0:
@@ -2277,7 +2277,7 @@ func _creature_detection_minimum(entity: EnemyCreature) -> float:
 	var minimum_range: float = entity.detection_range_min
 	if _player_entity and creature.get(player_pos, null) == _player_entity:
 		var stealth_bonus: int = PlayerData.equipped_armor_ego_bonus("stealth")
-		minimum_range -= float(stealth_bonus)
+		minimum_range -= stealth_bonus
 		if stealth_bonus > 0 and PlayerData.equipped_armor >= 0 and PlayerData.equipped_armor < PlayerData.inventory.size():
 			PlayerData.inventory[PlayerData.equipped_armor].identify_partially()
 	return maxf(0.0, minimum_range)
@@ -2624,7 +2624,7 @@ func _creature_fire_route(entity: Creature, goal: Vector2i, max_steps: int = 0, 
 	while not frontier.is_empty():
 		var entry: Dictionary = _path_heap_pop(frontier)
 		var position: Vector2i = entry.get("pos", start)
-		var current_score: float = float(entry.get("distance", 0.0))
+		var current_score: float = entry.get("distance", 0.0)
 		if current_score > float(distances.get(position, INF)):
 			continue
 		if position == goal:
@@ -2870,7 +2870,7 @@ func _nearest_unremembered_destination(entity: Creature, remembered_positions: D
 	var maximum_radius: int = entity.sight_range * 2
 	for radius: int in range(1, maximum_radius + 1):
 		var best_position: Vector2i = Vector2i(-1, -1)
-		var best_distance_squared: int = 0x7fffffff
+		var best_distance_squared: int = INT64_MAX
 		for offset_y: int in range(-radius, radius + 1):
 			for offset_x: int in [-radius, radius]:
 				var candidate: Vector2i = entity.pos + Vector2i(offset_x, offset_y)
@@ -2899,7 +2899,7 @@ func _nearest_unremembered_destination(entity: Creature, remembered_positions: D
 
 func _nearest_safe_creature_approach(entity: Creature, goal: Vector2i) -> Vector2i:
 	var best_position: Vector2i = Vector2i(-1, -1)
-	var best_distance: int = 0x7fffffff
+	var best_distance: int = INT64_MAX
 	for direction: Vector2i in StatusData.ADJACENT_DIRECTIONS:
 		var candidate: Vector2i = goal + direction
 		if not _creature_can_reach_any_known_tile(entity, candidate) or (creature.has(candidate) and candidate != player_pos):
@@ -3764,7 +3764,7 @@ func _identify_weapon_ego_if_effective(weapon: Weapon, ego_name: String, ego_lev
 		"penetration":
 			effect_size = mini(ego_level, maxi(0, applied_damage))
 		"draining", "force":
-			effect_size = mini(maxi(0, applied_damage), floori(float(ego_level) / 2.0))
+			effect_size = mini(maxi(0, applied_damage), floori(ego_level / 2.0))
 		"fire", "frost":
 			effect_size = ego_level if applied_damage > 0 else 0
 		"stunning":
@@ -4124,8 +4124,8 @@ func _path_heap_push(heap: Array[Dictionary], entry: Dictionary) -> void:
 	heap.append(entry)
 	var child_index: int = heap.size() - 1
 	while child_index > 0:
-		var parent_index: int = floori(float(child_index - 1) / 2.0)
-		if float(heap[parent_index].get("distance", 0.0)) <= float(heap[child_index].get("distance", 0.0)):
+		var parent_index: int = floori((child_index - 1) / 2.0)
+		if heap[parent_index].get("distance", 0.0) <= heap[child_index].get("distance", 0.0):
 			break
 		var parent_entry: Dictionary = heap[parent_index]
 		heap[parent_index] = heap[child_index]
@@ -4145,9 +4145,9 @@ func _path_heap_pop(heap: Array[Dictionary]) -> Dictionary:
 		if left_index >= heap.size():
 			break
 		var child_index: int = left_index
-		if right_index < heap.size() and float(heap[right_index].get("distance", 0.0)) < float(heap[left_index].get("distance", 0.0)):
+		if right_index < heap.size() and heap[right_index].get("distance", 0.0) < heap[left_index].get("distance", 0.0):
 			child_index = right_index
-		if float(heap[parent_index].get("distance", 0.0)) <= float(heap[child_index].get("distance", 0.0)):
+		if heap[parent_index].get("distance", 0.0) <= heap[child_index].get("distance", 0.0):
 			break
 		var parent_entry: Dictionary = heap[parent_index]
 		heap[parent_index] = heap[child_index]
@@ -4166,8 +4166,8 @@ func _player_path_to(target: Vector2i) -> Dictionary:
 	while not frontier.is_empty():
 		var entry: Dictionary = _path_heap_pop(frontier)
 		var pos: Vector2i = entry.get("pos", player_pos)
-		var current_distance: float = float(entry.get("distance", 0.0))
-		if current_distance > float(distance[pos]):
+		var current_distance: float = entry.get("distance", 0.0)
+		if current_distance > distance[pos]:
 			continue
 		if pos == target:
 			return previous
@@ -4543,47 +4543,6 @@ func _animate_throw_effect(path: Array[Vector2i], thrown_item: Item, detonation_
 	if animation_generation == _throw_visual_generation:
 		transient_visuals.clear()
 		redraw.emit()
-
-func _grenade_flash_color(color_name: String) -> int:
-	match color_name:
-		"crimson":
-			return 10
-		"vermilion":
-			return 10
-		"magenta":
-			return 13
-		"amaranthine":
-			return 2
-		"mauve":
-			return 13
-		"periwinkle":
-			return 14
-		"eburnean":
-			return 15
-		"ochre":
-			return 3
-		"chartreuse":
-			return 9
-		"croceous":
-			return 11
-		"ecru":
-			return 7
-		"verdigris":
-			return 6
-		"khaki":
-			return 1
-		"azure":
-			return 12
-		"mazarine":
-			return 4
-		"filemot":
-			return 3
-		"perse":
-			return 5
-		"atrous":
-			return 0
-		_:
-			return 8
 
 func _refresh_throw_trajectory_preview() -> void:
 	if throw_inventory_index < 0 or throw_inventory_index >= PlayerData.inventory.size():
@@ -5499,14 +5458,13 @@ func _throw_selected_item_at(target: Vector2i) -> void:
 	var grenade_radius: int = grenade_enchantment + 4 if is_grenade else 0
 	if is_grenade:
 		_play_sound("grenade" if grenade_enchantment == 0 else "grenade_e")
-	await _animate_throw_effect(throw_path, projectile, target, grenade_radius, _grenade_flash_color(projectile.name_unid) if is_grenade else 15)
+	await _animate_throw_effect(throw_path, projectile, target, grenade_radius, (projectile as Grenade).grenade_flash_color() if is_grenade else 15)
 	if is_grenade:
 		for blast_position in _get_circle(grenade_radius, target, true):
 			if blast_position.x < 0 or blast_position.x >= MAP_W or blast_position.y < 0 or blast_position.y > MAP_H:
 				continue
 			var offset = Vector2i(absi(blast_position.x - target.x), absi(blast_position.y - target.y))
-			var blast_distance: float = (offset.y + offset.x / 2.0) if offset.max_axis_index() else (offset.x + offset.y / 2.0)
-			@warning_ignore("narrowing_conversion")
+			var blast_distance := ceili(offset.y + offset.x / 2.0) if offset.max_axis_index() else ceili(offset.x + offset.y / 2.0)
 			var concentration: int = maxi(1, grenade_radius - blast_distance)
 			_make_creature_at_position_aware_of_player(blast_position)
 			var terrain: TerrainData.Terrain = grid[blast_position]
@@ -5619,7 +5577,7 @@ func _apply_wand_effect(wand: Wand, target: Creature) -> void:
 		"fire":
 			_apply_timed_activation_status(target, "Burning", enchantment + 2)
 		"frost":
-			_deal_damage(target, ceili(float(enchantment + 1) / 2.0), "cold")
+			_deal_damage(target, ceili((enchantment + 1) / 2.0), "cold")
 			if target.health > 0:
 				_apply_timed_activation_status(target, "Frozen", floori(float(enchantment + 3) / 2.0))
 		"fear":
@@ -5644,10 +5602,10 @@ func _apply_wand_effect(wand: Wand, target: Creature) -> void:
 func _remove_transference_link_for_entity(entity: Creature) -> void:
 	for link_id: int in _transference_links.keys():
 		var linked_entities: Dictionary = _transference_links[link_id]
-		if entity == linked_entities.get("player", {}) or entity == linked_entities.get("target", {}):
+		if entity == linked_entities["player"] or entity == linked_entities["target"]:
 			_transference_links.erase(link_id)
-			StatusData.remove_status(linked_entities.get("player", {}), "Transference")
-			StatusData.remove_status(linked_entities.get("target", {}), "Transference")
+			StatusData.remove_status(linked_entities["player"], "Transference")
+			StatusData.remove_status(linked_entities["target"], "Transference")
 
 func _apply_transference(target: Creature, duration: int) -> void:
 	if target.health <= 0 or duration <= 0:
@@ -5702,8 +5660,8 @@ func _repel_target_from_player(target: Creature, distance: int) -> void:
 	var collision_damage: int = mini(moved_count, blocked_count) if did_collide else 0
 	if collision_damage > 0:
 		if opposing_creature:
-			var other_damage: int = floori(float(collision_damage) / 2.0)
-			var target_damage: int = ceili(float(collision_damage) / 2.0)
+			var other_damage: int = floori((collision_damage) / 2.0)
+			var target_damage: int = ceili((collision_damage) / 2.0)
 			_deal_damage(target, target_damage, "physical")
 			_deal_damage(opposing_creature, other_damage, "physical")
 		else:
@@ -5738,9 +5696,8 @@ func _activate_charm_effect(charm: Charm) -> void:
 	_append_message("You activate %s." % _item_dp(charm, true))
 
 func _repel_nearby_creatures(enchantment: int) -> void:
-	var nonnegative_enchantment: int = maxi(0, enchantment)
-	var radius: int = 1 + floori(float(nonnegative_enchantment + 1) / 2.0)
-	var repulsion_range: int = 1 + floori(float(nonnegative_enchantment) / 2.0)
+	var radius: int = 1 + floori((enchantment + 1) / 2.0)
+	var repulsion_range: int = 1 + floori(enchantment / 2.0)
 	var targets: Array[Creature] = []
 	for target: Creature in creature.values():
 		if target is PlayerCreature or target.health <= 0:

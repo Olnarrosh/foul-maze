@@ -2,8 +2,8 @@ class_name CreatureData
 extends Node
 
 # Creature categories determine traits, resistances, and gameplay behavior.
-# HUMANOID: Goblins, humans, etc. - can use items, have intelligence
-# ANIMAL: Creatures - beasts, monsters, etc.
+# HUMANOID: Goblins, humans, etc.
+# ANIMAL: Beasts, monsters, etc.
 # UNHOLY: Undead, demons, etc. - resistant to poison, often have special traits
 enum CreatureCategory {
 	HUMANOID,
@@ -45,7 +45,7 @@ const creatures: Array[Dictionary] = [
 	{name="bear", char="b", danger=22, fg=8, move_speed=20, attack_speed=20, sight_range=10, health=18, damage=11, armor=1, accuracy=60, evasion=0, category=CreatureCategory.ANIMAL, desc="A large, thick-furred predator.", attack_str=["mauls", "bites", "claws"], biomes=[Map.Biome.CAVE, Map.Biome.CAVE]},
 	{name="shark", char="s", danger=16, fg=15, move_speed=20, attack_speed=20, sight_range=10, health=15, damage=7, armor=0, accuracy=75, evasion=2, category=CreatureCategory.ANIMAL, desc="", traits=["Aquatic"], attack_str=[], biomes=[Map.Biome.WATER]},
 	{name="crocodile", char="C", danger=17, fg=9, move_speed=20, attack_speed=20, sight_range=10, health=11, damage=6, armor=1, accuracy=70, evasion=1, category=CreatureCategory.ANIMAL, desc="", traits=["Amphibious"], attack_str=[], biomes=[Map.Biome.WATER]},
-	{name="phantom blade", char="†", danger=1, fg=13, move_speed=10, attack_speed=20, sight_range=20, health=1, damage=1, armor=0, accuracy=100, evasion=10, category=CreatureCategory.UNHOLY, desc="A shimmering, floating blade that seems to move and strike by itself.", traits=["Mindless", "Flying", "Ephemeral"], resistances=["poison"], attack_str=["slashes", "cuts", "stabs", "slices", "punctures", "hits", "strikes"], biomes=[]},
+	{name="phantom blade", char="†", danger=0, fg=13, move_speed=10, attack_speed=20, sight_range=20, health=1, damage=1, armor=0, accuracy=100, evasion=10, category=CreatureCategory.UNHOLY, desc="A shimmering, floating blade that seems to move and strike by itself.", traits=["Mindless", "Flying", "Ephemeral"], resistances=["poison"], attack_str=["slashes", "cuts", "stabs", "slices", "punctures", "hits", "strikes"], biomes=[]},
 ]
 
 static func get_creatures_by_biome(biome: Map.Biome) -> Array[Dictionary]:
