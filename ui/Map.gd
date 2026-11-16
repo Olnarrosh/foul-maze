@@ -44,6 +44,14 @@ var environment_time: int = 0
 var environment_next_tick: Dictionary = {"steam": ENV_TICK_INTERVAL["steam"], "smoke": ENV_TICK_INTERVAL["smoke"], "fire": ENV_TICK_INTERVAL["fire"]}
 var creature: Dictionary[Vector2i, Creature] = {}
 var item: Dictionary[Vector2i, Item] = {}
+## Incremented whenever a tile's occlusion or the set of vision-blocking environment cells changes.
+## FOV caches are keyed on it, so they go stale only when sight can actually change.
+var _vision_epoch: int = 0
+## Shared across maps so a creature carried between levels can never match a stale cache entry.
+static var _vision_epoch_source: int = 0
+var _vision_blocking_environment: Dictionary[Vector2i, bool] = {}
+## Positions whose terrain currently runs a timer. Lets environment time skip the whole grid.
+var _timed_terrain_positions: Dictionary[Vector2i, bool] = {}
 
 var show_inventory: bool = false
 var equip_selection_active: bool = false
@@ -174,6 +182,7 @@ func _emit_quenching_steam(position: Vector2i) -> void:
 			if _environment_kind(current_effect) == "steam":
 				steam_concentration = maxi(steam_concentration, _environment_concentration(current_effect))
 			environment[steam_position] = {"type": "steam", "concentration": mini(ENVIRONMENT_MAX_CONCENTRATION, steam_concentration), "burns_terrain": false}
+	_sync_vision_environment()
 	redraw.emit()
 
 func _is_altar_tile(tile: TerrainData.Terrain) -> bool:
@@ -357,7 +366,7 @@ func _generate_level(defer_player_setup: bool = false) -> void:
 			break
 		if selected_position.x < 0:
 			break
-		grid[selected_position] = TerrainData.get_terrain(altar_type)
+		_set_tile(selected_position, TerrainData.get_terrain(altar_type))
 		altar_positions.append(selected_position)
 	
 	if level == 1:
@@ -492,11 +501,13 @@ func _biome_for_level(depth: int, final_biome: Biome) -> Biome:
 
 func _init_grid() -> void:
 	environment.clear()
+	_timed_terrain_positions.clear()
+	_sync_vision_environment()
 	environment_time = 0
 	environment_next_tick = {"steam": ENV_TICK_INTERVAL["steam"], "smoke": ENV_TICK_INTERVAL["smoke"], "fire": ENV_TICK_INTERVAL["fire"]}
 	for y in range(MAP_H):
 		for x in range(MAP_W):
-			grid[Vector2i(x, y)] = TerrainData.get_terrain(TerrainData.TileType.WALL)
+			_set_tile(Vector2i(x, y), TerrainData.get_terrain(TerrainData.TileType.WALL))
 
 func _create_colossal_sectors() -> Array[Dictionary]:
 	var split_y: int = randi_range(16, 22)
@@ -578,7 +589,7 @@ func _run_walkers(sectors: Array, force_walkers: bool = false, floor_min: float 
 
 	# Spawn walkers at sector borders
 	for w in walkers:
-		grid[Vector2i(w.x, w.y)] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+		_set_tile(Vector2i(w.x, w.y), TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 	for sec: Dictionary in sectors:
 		# 2/3 chance of walkers, 1/3 chance of noise-based generation.
 		var use_walkers: bool = true if force_walkers else bool(randi() % 3)
@@ -611,7 +622,7 @@ func _run_walkers(sectors: Array, force_walkers: bool = false, floor_min: float 
 						else:
 							w.y += 1 if w.y < target else -1
 					if not grid[Vector2i(w.x, w.y)].passable:
-						grid[Vector2i(w.x, w.y)] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+						_set_tile(Vector2i(w.x, w.y), TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 						floors += 1
 		else:
 			var noise = FastNoiseLite.new()
@@ -619,7 +630,7 @@ func _run_walkers(sectors: Array, force_walkers: bool = false, floor_min: float 
 			noise.frequency = randf_range(0.1, 1.0)
 			for x in range(sec.x_min, sec.x_max + 1):
 				for y in range(sec.y_min, sec.y_max + 1):
-					grid[Vector2i(x, y)] = TerrainData.get_terrain(TerrainData.TileType.WALL) if noise.get_noise_2d(x, y) > 0 else TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+					_set_tile(Vector2i(x, y), TerrainData.get_terrain(TerrainData.TileType.WALL) if noise.get_noise_2d(x, y) > 0 else TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 			_smooth_walls(sec, 8, 7)
 
 func _generate_two_sector_walkers(sectors: Array, floor_min: float, floor_max: float, randomized_sector: int) -> void:
@@ -635,7 +646,7 @@ func _generate_two_sector_walkers(sectors: Array, floor_min: float, floor_max: f
 			var sector_area: int = (int(sector.x_max) - int(sector.x_min) + 1) * (int(sector.y_max) - int(sector.y_min) + 1)
 			var floor_requirement: int = int(float(sector_area) * randf_range(floor_min, floor_max))
 			var walker_position: Vector2i = Vector2i(crossing_x, crossing_y)
-			grid[walker_position] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+			_set_tile(walker_position, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 			var floors: int = 1
 			while floors < floor_requirement:
 				var direction: Vector2i = [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN].pick_random()
@@ -644,7 +655,7 @@ func _generate_two_sector_walkers(sectors: Array, floor_min: float, floor_max: f
 					continue
 				walker_position = next_position
 				if not grid[walker_position].passable:
-					grid[walker_position] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+					_set_tile(walker_position, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 					floors += 1
 		else:
 			var noise: FastNoiseLite = FastNoiseLite.new()
@@ -653,9 +664,9 @@ func _generate_two_sector_walkers(sectors: Array, floor_min: float, floor_max: f
 			noise.frequency = 0.12
 			for x: int in range(int(sector.x_min), int(sector.x_max) + 1):
 				for y: int in range(int(sector.y_min), int(sector.y_max) + 1):
-					grid[Vector2i(x, y)] = TerrainData.get_terrain(TerrainData.TileType.WALL) if noise.get_noise_2d(x, y) > 0.0 else TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+					_set_tile(Vector2i(x, y), TerrainData.get_terrain(TerrainData.TileType.WALL) if noise.get_noise_2d(x, y) > 0.0 else TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 			_smooth_walls(sector, 8, 7)
-		grid[Vector2i(crossing_x, crossing_y)] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+		_set_tile(Vector2i(crossing_x, crossing_y), TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 
 func _generate_rooms(sectors: Array) -> Array[Vector2i]:
 	var room_centers: Array[Vector2i] = []
@@ -685,7 +696,7 @@ func _generate_rooms(sectors: Array) -> Array[Vector2i]:
 		for y: int in range(room_y_min, room_y_max + 1):
 			for x: int in range(room_x_min, room_x_max + 1):
 				var room_border: bool = x == room_x_min or x == room_x_max or y == room_y_min or y == room_y_max
-				grid[Vector2i(x, y)] = TerrainData.get_terrain(TerrainData.TileType.WALL) if room_border else TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+				_set_tile(Vector2i(x, y), TerrainData.get_terrain(TerrainData.TileType.WALL) if room_border else TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 		room_centers.append(Vector2i(floori(float(room_x_min + room_x_max) / 2.0), floori(float(room_y_min + room_y_max) / 2.0)))
 	return room_centers
 
@@ -720,13 +731,13 @@ func _carve_orthogonal_corridor(start: Vector2i, finish: Vector2i, horizontal_fi
 
 func _carve_straight_segment(start: Vector2i, finish: Vector2i) -> void:
 	var current: Vector2i = start
-	grid[current] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+	_set_tile(current, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 	while current != finish:
 		if current.x != finish.x:
 			current.x += signi(finish.x - current.x)
 		else:
 			current.y += signi(finish.y - current.y)
-		grid[current] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+		_set_tile(current, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 
 func _convert_isolated_walls_to_stalagmites() -> void:
 	for y: int in range(EDGE, MAP_H - EDGE):
@@ -745,7 +756,7 @@ func _convert_isolated_walls_to_stalagmites() -> void:
 				if has_adjacent_wall:
 					break
 			if not has_adjacent_wall and randi() % 2:
-				grid[position] = TerrainData.get_terrain(TerrainData.TileType.STALAGMITE)
+				_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.STALAGMITE))
 
 func _town_floor_network_connected() -> bool:
 	var floor_positions: Array[Vector2i] = []
@@ -787,18 +798,18 @@ func _place_town_barricades() -> void:
 			for x: int in range(candidate.position.x + 1, candidate.end.x - 1):
 				var interior_position: Vector2i = Vector2i(x, y)
 				original_tiles[interior_position] = grid[interior_position]
-				grid[interior_position] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+				_set_tile(interior_position, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 		for position: Vector2i in _rectangle_positions(candidate):
 			original_tiles[position] = grid[position]
 			if position != opening:
-				grid[position] = TerrainData.get_terrain(TerrainData.TileType.BARRICADE)
+				_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.BARRICADE))
 				floor_tiles.erase(position)
-		grid[opening] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+		_set_tile(opening, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 		town_barricade_rectangles.append(candidate)
 		if not _town_floor_network_connected():
 			town_barricade_rectangles.pop_back()
 			for original_position: Vector2i in original_tiles:
-				grid[original_position] = original_tiles[original_position]
+				_set_tile(original_position, original_tiles[original_position])
 
 func _first_town_floor_position() -> Vector2i:
 	for position: Vector2i in grid.keys():
@@ -877,7 +888,7 @@ func _place_spaced_biome_candidates(candidates: Array[Dictionary], tile_type: in
 		var position: Vector2i = candidate.position
 		if _has_adjacent_tile_type(position, TerrainData.get_terrain(tile_type)):
 			continue
-		grid[position] = TerrainData.get_terrain(tile_type)
+		_set_tile(position, TerrainData.get_terrain(tile_type))
 		placed_count += 1
 	return placed_count
 
@@ -889,7 +900,7 @@ func _place_unspaced_biome_candidates(candidates: Array[Dictionary], tile_type: 
 	for candidate: Dictionary in shuffled_candidates:
 		if placed_count >= target_count:
 			break
-		grid[candidate.position] = TerrainData.get_terrain(tile_type)
+		_set_tile(candidate.position, TerrainData.get_terrain(tile_type))
 		placed_count += 1
 	return placed_count
 
@@ -904,21 +915,21 @@ func _apply_water_terrain(noise: FastNoiseLite, inverse: bool) -> void:
 		return position != player_pos and position != stairs_up_pos and position != stairs_down_pos
 	)
 	for candidate: Dictionary in water_floors:
-		grid[candidate.position] = TerrainData.get_terrain(TerrainData.TileType.WATER_SHALLOW)
+		_set_tile(candidate.position, TerrainData.get_terrain(TerrainData.TileType.WATER_SHALLOW))
 	for candidate: Dictionary in water_walls:
-		grid[candidate.position] = TerrainData.get_terrain(TerrainData.TileType.WATER_DEEP)
+		_set_tile(candidate.position, TerrainData.get_terrain(TerrainData.TileType.WATER_DEEP))
 
 func _apply_forest_terrain(noise: FastNoiseLite) -> void:
 	var floor_positions: Array[Vector2i] = _collect_tiles([TerrainData.TileType.FLOOR])
 	var shrub_candidates: Array[Dictionary] = _biome_candidates_in_noise_range(floor_positions, noise, 0.6, 1.0)
 	var moss_candidates: Array[Dictionary] = _biome_candidates_in_noise_range(floor_positions, noise, 0.0, 0.6)
 	for candidate: Dictionary in shrub_candidates:
-		grid[candidate.position] = TerrainData.get_terrain(TerrainData.TileType.SHRUB)
+		_set_tile(candidate.position, TerrainData.get_terrain(TerrainData.TileType.SHRUB))
 	for candidate: Dictionary in moss_candidates:
-		grid[candidate.position] = TerrainData.get_terrain(TerrainData.TileType.MOSS)
+		_set_tile(candidate.position, TerrainData.get_terrain(TerrainData.TileType.MOSS))
 	var forest_walls: Array[Dictionary] = _biome_candidates_in_noise_range(_collect_tiles([TerrainData.TileType.WALL]), noise, 0.7, 1.0)
 	for candidate: Dictionary in forest_walls:
-		grid[candidate.position] = TerrainData.get_terrain(TerrainData.TileType.TREE)
+		_set_tile(candidate.position, TerrainData.get_terrain(TerrainData.TileType.TREE))
 
 func _apply_biome_terrain(noise: FastNoiseLite) -> void:
 	match _biome:
@@ -944,7 +955,7 @@ func _apply_biome_terrain(noise: FastNoiseLite) -> void:
 				return position != player_pos and position != stairs_up_pos and position != stairs_down_pos
 			)
 			for candidate: Dictionary in fire_walls:
-				grid[candidate.position] = TerrainData.get_terrain(TerrainData.TileType.LAVA)
+				_set_tile(candidate.position, TerrainData.get_terrain(TerrainData.TileType.LAVA))
 			var fire_floor: Array[Dictionary] = _biome_candidates_in_noise_range(_collect_tiles([TerrainData.TileType.FLOOR]), noise, 0.5, 1.0)
 			fire_floor = fire_floor.filter(func(candidate: Dictionary) -> bool:
 				var position: Vector2i = candidate.position
@@ -955,10 +966,10 @@ func _apply_biome_terrain(noise: FastNoiseLite) -> void:
 		Biome.ICE:
 			var ice_floor_positions: Array[Vector2i] = _collect_tiles([TerrainData.TileType.FLOOR])
 			for position: Vector2i in ice_floor_positions:
-				grid[position] = TerrainData.get_terrain(TerrainData.TileType.SNOW)
+				_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.SNOW))
 			var ice_floor: Array[Dictionary] = _biome_candidates_in_noise_range(ice_floor_positions, noise, 0.4, 1.0)
 			for candidate: Dictionary in ice_floor:
-				grid[candidate.position] = TerrainData.get_terrain(TerrainData.TileType.ICE)
+				_set_tile(candidate.position, TerrainData.get_terrain(TerrainData.TileType.ICE))
 
 
 func _apply_fire_terrain(candidates: Array[Dictionary]) -> void:
@@ -966,13 +977,13 @@ func _apply_fire_terrain(candidates: Array[Dictionary]) -> void:
 		return
 	if not _are_walkable_tiles_connected():
 		for candidate: Dictionary in candidates:
-			grid[candidate.position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
+			_set_tile(candidate.position, TerrainData.get_terrain(TerrainData.TileType.ASHES))
 		return
 	for candidate: Dictionary in candidates:
 		var candidate_position: Vector2i = candidate.position
 		if candidate_position == player_pos or candidate_position == stairs_up_pos or candidate_position == stairs_down_pos:
 			continue
-		grid[candidate_position] = TerrainData.get_terrain(TerrainData.TileType.LAVA)
+		_set_tile(candidate_position, TerrainData.get_terrain(TerrainData.TileType.LAVA))
 	if _are_walkable_tiles_connected():
 		return
 	var connected_limit: int = 0
@@ -990,9 +1001,9 @@ func _set_fire_candidate_prefix(candidates: Array[Dictionary], lava_count: int) 
 	for index: int in range(candidates.size()):
 		var position: Vector2i = candidates[index].position
 		if position == player_pos or position == stairs_up_pos or position == stairs_down_pos:
-			grid[position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
+			_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.ASHES))
 			continue
-		grid[position] = TerrainData.get_terrain(TerrainData.TileType.LAVA if index < lava_count else TerrainData.TileType.ASHES)
+		_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.LAVA if index < lava_count else TerrainData.TileType.ASHES))
 
 func _has_adjacent_tile_type(position: Vector2i, tile_type: TerrainData.Terrain) -> bool:
 	for offset_y: int in range(-1, 2):
@@ -1019,12 +1030,13 @@ func _place_cave_geysers() -> void:
 	for position: Vector2i in eligible_floor_tiles:
 		if geysers_placed >= geyser_count:
 			break
-		grid[position] = TerrainData.get_terrain(TerrainData.TileType.GEYSER)
+		_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.GEYSER))
 		if _are_walkable_tiles_connected():
 			geysers_placed += 1
 			grid[position].timer = randi_range(2000, 4000)
+			_timed_terrain_positions[position] = true
 		else:
-			grid[position] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+			_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 
 func _are_walkable_tiles_connected() -> bool:
 	var walkable_positions: Array[Vector2i] = []
@@ -1111,12 +1123,39 @@ func _merge_slope_ranges(ranges: Array[Vector2]) -> Array[Vector2]:
 			merged.append(current)
 	return merged
 
+## Records what the player currently sees into their memory. Only visible tiles are written,
+## so each one takes the visible branch of get_display_char / get_fg_color / get_bg_color and
+## get_hover_text. Those are resolved once per tile here, not four separate times.
 func _snapshot_visible_state() -> void:
-	for tile in visible_tiles:
-		tile_last_seen[tile] = grid[tile]
-		char_last_seen[tile] = get_display_char(tile.x, tile.y)
-		fg_last_seen[tile] = darken(get_fg_color(tile.x, tile.y))
-		bg_last_seen[tile] = darken(get_bg_color(tile.x, tile.y))
+	var blind: bool = StatusData.has_status(_player_entity, "Blind")
+	for tile: Vector2i in visible_tiles:
+		# Tiles outside the view or hidden by blindness record blank display values, as before.
+		if not is_in_view(tile.x, tile.y) or (blind and player_pos.distance_to(tile) > 1.0):
+			char_last_seen[tile] = " "
+			fg_last_seen[tile] = 0
+			bg_last_seen[tile] = 0
+			continue
+		var terrain: TerrainData.Terrain = grid[tile]
+		tile_last_seen[tile] = terrain
+		var display_char: String = terrain.glyph
+		var fg: int = terrain.fg
+		var bg: int = terrain.bg
+		var env_bg: int = _environment_color(tile)
+		if env_bg >= 0:
+			bg = env_bg
+		if tile in creature:
+			var occupant: Creature = creature[tile]
+			var hidden: bool = not occupant is PlayerCreature and StatusData.has_status(occupant, "Invisible")
+			if not hidden:
+				display_char = occupant.glyph
+				fg = int(occupant.color)
+		elif tile in item:
+			var ground_item: Item = item[tile]
+			display_char = ground_item.glyph
+			fg = int(ground_item.color)
+		char_last_seen[tile] = display_char
+		fg_last_seen[tile] = darken(fg)
+		bg_last_seen[tile] = darken(bg)
 		var description: String = get_hover_text(tile.x, tile.y, true)
 		if not description.is_empty():
 			desc_last_seen[tile] = description
@@ -1128,9 +1167,14 @@ func _compute_fov(observer: Creature) -> Dictionary[Vector2i, bool]:
 	StatusData.trigger(observer, StatusData.EffectType.VISION, vision_context)
 	if StatusData.has_status(observer, "Sleeping") or (observer is PlayerCreature and _resting):
 		vision_context.sight_range = maxi(1, floori(vision_context.get("sight_range", 1) * 0.5))
-	
+
 	var observer_pos: Vector2i = observer.pos
 	var sight_range: int = maxi(1, int(vision_context.get("sight_range", observer.sight_range)))
+	# Sight depends only on position, effective sight range and map occlusion, so a result
+	# can be reused until one of those changes. Creature turns and environment time do not matter.
+	var cache_key := Vector4i(observer_pos.x, observer_pos.y, sight_range, _vision_epoch)
+	if observer.fov_cache_key == cache_key:
+		return observer.fov_cache.duplicate()
 	var observer_visible: Dictionary[Vector2i, bool] = {observer_pos: true}
 	var octants: Array = [
 		[Vector2i(1, 0), Vector2i(0, 1)],
@@ -1174,6 +1218,8 @@ func _compute_fov(observer: Creature) -> Dictionary[Vector2i, bool]:
 					ring_walls.append(Vector2(slope_min, slope_max))
 			blocked_slopes.append_array(ring_walls)
 			blocked_slopes = _merge_slope_ranges(blocked_slopes)
+	observer.fov_cache = observer_visible.duplicate()
+	observer.fov_cache_key = cache_key
 	return observer_visible
 
 func _recompute_all_fov() -> void:
@@ -1208,14 +1254,14 @@ func _smooth_walls(sector, wall_threshold, floor_threshold) -> void:
 			elif wall_count <= floor_threshold:
 				to_floor.append(Vector2i(x,y))
 	for v in to_wall:
-		grid[v] = TerrainData.get_terrain(TerrainData.TileType.WALL)
+		_set_tile(v, TerrainData.get_terrain(TerrainData.TileType.WALL))
 	for v in to_floor:
-		grid[v] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+		_set_tile(v, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 
-func _find_reachable(start: Vector2i, initial: Dictionary = {}) -> Dictionary:
+func _find_reachable(start: Vector2i, initial: Dictionary[Vector2i, bool] = {}) -> Dictionary[Vector2i, bool]:
 	var stack := [start]
 	var next_stack := []
-	var reachable = {start: true}
+	var reachable: Dictionary[Vector2i, bool] = {start: true}
 	if initial:
 		for v in initial:
 			reachable[v] = true
@@ -1280,7 +1326,7 @@ func _connect_floors() -> void:
 					current.y -= sign(dist_y)
 				else:
 					current.x -= sign(dist_x)
-				grid[current] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+				_set_tile(current, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 			reachable = _find_reachable(tile, reachable)
 
 func _terrain_distances(start: Vector2i) -> Dictionary:
@@ -1326,14 +1372,14 @@ func _place_stairs() -> void:
 			break
 	if up_wall.x >= 0:
 		stairs_up_pos = up_wall
-		grid[stairs_up_pos] = TerrainData.get_terrain(TerrainData.TileType.STAIRS_UP)
+		_set_tile(stairs_up_pos, TerrainData.get_terrain(TerrainData.TileType.STAIRS_UP))
 		if level == 1:
 			player_pos = up_floor
 		else:
 			player_pos = stairs_up_pos
 	else:
 		stairs_up_pos = up_floor
-		grid[stairs_up_pos] = TerrainData.get_terrain(TerrainData.TileType.STAIRS_UP)
+		_set_tile(stairs_up_pos, TerrainData.get_terrain(TerrainData.TileType.STAIRS_UP))
 		player_pos = up_floor if level == 1 else stairs_up_pos
 
 	if level >= MAX_LEVEL:
@@ -1368,7 +1414,7 @@ func _place_stairs() -> void:
 			candidates.append_array(adjacent_walls)
 	if not candidates.is_empty():
 		stairs_down_pos = candidates.pick_random()
-		grid[stairs_down_pos] = TerrainData.get_terrain(TerrainData.TileType.STAIRS_DOWN)
+		_set_tile(stairs_down_pos, TerrainData.get_terrain(TerrainData.TileType.STAIRS_DOWN))
 		return
 	stairs_down_pos = player_pos
 
@@ -1428,7 +1474,7 @@ func _activate_altar_at(position: Vector2i) -> bool:
 	_play_sound(result["sound"])
 	var replacement_types: Array[TerrainData.Terrain] = _adjacent_passable_tile_types(position)
 	if not replacement_types.is_empty():
-		grid[position] = replacement_types.pick_random()
+		_set_tile(position, replacement_types.pick_random())
 	redraw.emit()
 	return true
 
@@ -1799,11 +1845,11 @@ func apply_status_to_entity(entity: Creature, status_name: String, duration: int
 					_emit_quenching_steam(entity_position)
 				return false
 			TerrainData.Flammability.EXTINGUISH_MELT_TO_FLOOR:
-				grid[entity_position] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+				_set_tile(entity_position, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 				_extinguish_entity_on_cold_terrain(entity, entity_position)
 				return false
 			TerrainData.Flammability.EXTINGUISH_MELT_TO_WATER:
-				grid[entity_position] = TerrainData.get_terrain(TerrainData.TileType.WATER_SHALLOW)
+				_set_tile(entity_position, TerrainData.get_terrain(TerrainData.TileType.WATER_SHALLOW))
 				_extinguish_entity_on_cold_terrain(entity, entity_position)
 				return false
 	var applied: bool = StatusData.apply_status(entity, status_name, duration, _status_context())
@@ -1866,9 +1912,14 @@ func _advance_regeneration(entity: Creature, time_cost: int) -> void:
 const ENVIRONMENT_VISIBLE_THRESHOLD: int = 2
 const ENVIRONMENT_MAX_CONCENTRATION: int = 100
 
+const VISIBLE_ENVIRONMENT_KINDS: Array[String] = ["steam", "smoke", "fire"]
+
 func _environment_effect(position: Vector2i) -> Dictionary:
+	# Most cells have no environment, so this is the common, cheap path.
+	if environment.is_empty():
+		return {}
 	var effect: Dictionary = environment.get(position, {})
-	return effect if _environment_kind(effect) in ["steam", "smoke", "fire"] else {}
+	return effect if _environment_kind(effect) in VISIBLE_ENVIRONMENT_KINDS else {}
 
 func _environment_kind(effect: Dictionary) -> String:
 	return effect.get("type", "")
@@ -1878,14 +1929,16 @@ func _environment_concentration(effect: Dictionary) -> int:
 
 func _environment_visible(position: Vector2i) -> bool:
 	var effect: Dictionary = _environment_effect(position)
-	if _environment_kind(effect) not in ["steam", "smoke", "fire"]:
+	if effect.is_empty():
 		return false
 	return _environment_concentration(effect) >= ENVIRONMENT_VISIBLE_THRESHOLD
 
 func _environment_color(position: Vector2i) -> int:
-	if not _environment_visible(position):
+	# One lookup per cell: the effect is fetched once and checked for visibility from it.
+	var effect: Dictionary = _environment_effect(position)
+	if effect.is_empty() or _environment_concentration(effect) < ENVIRONMENT_VISIBLE_THRESHOLD:
 		return -1
-	match _environment_kind(_environment_effect(position)):
+	match _environment_kind(effect):
 		"steam":
 			return 7
 		"smoke":
@@ -1895,10 +1948,40 @@ func _environment_color(position: Vector2i) -> int:
 	return -1
 
 func _environment_blocks_vision(position: Vector2i) -> bool:
-	if not _environment_visible(position):
+	var effect: Dictionary = _environment_effect(position)
+	if effect.is_empty() or _environment_concentration(effect) < ENVIRONMENT_VISIBLE_THRESHOLD:
 		return false
-	var kind: String = _environment_kind(_environment_effect(position))
+	var kind: String = _environment_kind(effect)
 	return kind == "steam" or kind == "smoke"
+
+## Returns the cells currently blocking vision through the environment.
+func _vision_blocking_cells() -> Dictionary[Vector2i, bool]:
+	var cells: Dictionary[Vector2i, bool] = {}
+	for position: Vector2i in environment.keys():
+		if _environment_blocks_vision(position):
+			cells[position] = true
+	return cells
+
+## Gives this map a fresh, globally unique vision epoch.
+func _next_vision_epoch() -> void:
+	_vision_epoch_source += 1
+	_vision_epoch = _vision_epoch_source
+
+## Bumps the vision epoch only if the set of vision-blocking environment cells differs from the last sync.
+## Call after any mutation of `environment`. Environment time passing alone does not change sight.
+func _sync_vision_environment() -> void:
+	var current: Dictionary[Vector2i, bool] = _vision_blocking_cells()
+	if current == _vision_blocking_environment:
+		return
+	_vision_blocking_environment = current
+	_next_vision_epoch()
+
+## Sets a tile and invalidates cached sight only if its occlusion changes.
+func _set_tile(position: Vector2i, terrain: TerrainData.Terrain) -> void:
+	var previous: TerrainData.Terrain = grid.get(position)
+	grid[position] = terrain
+	if previous == null or previous.occluding != terrain.occluding:
+		_next_vision_epoch()
 
 func set_environment_effect(position: Vector2i, effect_type: String, concentration: int) -> void:
 	if position.x < 0 or position.x >= MAP_W or position.y < 0 or position.y >= MAP_H or concentration <= 0:
@@ -1910,12 +1993,13 @@ func set_environment_effect(position: Vector2i, effect_type: String, concentrati
 	if not current.is_empty() and current_concentration > concentration:
 		return
 	if _environment_kind(current) == "fire" and effect_type != "fire" and current.get("burns_terrain", false):
-		grid[position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
+		_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.ASHES))
 	var clamped_concentration: int = mini(ENVIRONMENT_MAX_CONCENTRATION, concentration)
 	var burns_terrain: bool = current.get("burns_terrain", false) if _environment_kind(current) == "fire" and effect_type != "fire" else effect_type == "fire" and grid[position].flammability == TerrainData.Flammability.FULL_FIRE
 	if _environment_kind(current) == "fire" and effect_type != "fire" and current.get("burns_terrain", false):
-		grid[position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
+		_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.ASHES))
 	environment[position] = {"type": effect_type, "concentration": clamped_concentration, "burns_terrain": burns_terrain}
+	_sync_vision_environment()
 	redraw.emit()
 
 func _ignite_flammable_tile(position: Vector2i, concentration: int = 30) -> void:
@@ -1924,7 +2008,7 @@ func _ignite_flammable_tile(position: Vector2i, concentration: int = 30) -> void
 	var ignition_concentration: int = clampi(concentration, _environment_concentration(existing), ENVIRONMENT_MAX_CONCENTRATION)
 	var flammability = tile.flammability
 	if flammability == TerrainData.Flammability.EXTINGUISH_MELT_TO_FLOOR:
-		grid[position] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+		_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 		if creature.has(position):
 			var snow_entity: Creature = creature[position]
 			_extinguish_entity_on_cold_terrain(snow_entity, position)
@@ -1932,7 +2016,7 @@ func _ignite_flammable_tile(position: Vector2i, concentration: int = 30) -> void
 			redraw.emit()
 		return
 	elif flammability == TerrainData.Flammability.EXTINGUISH_MELT_TO_WATER:
-		grid[position] = TerrainData.get_terrain(TerrainData.TileType.WATER_SHALLOW)
+		_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.WATER_SHALLOW))
 		if creature.has(position):
 			var ice_entity: Creature = creature[position]
 			_extinguish_entity_on_cold_terrain(ice_entity, position)
@@ -1944,7 +2028,7 @@ func _ignite_flammable_tile(position: Vector2i, concentration: int = 30) -> void
 		redraw.emit()
 		return
 	elif flammability == TerrainData.Flammability.EVAPORATE:
-		grid[position] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+		_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 		ignition_concentration = max(0, ignition_concentration - 1)
 	elif flammability == TerrainData.Flammability.LIMITED_FIRE:
 		ignition_concentration /= 2
@@ -1954,6 +2038,7 @@ func _ignite_flammable_tile(position: Vector2i, concentration: int = 30) -> void
 		if ignition_concentration < _environment_concentration(existing):
 			return
 	environment[position] = {"type": "fire", "concentration": ignition_concentration, "burns_terrain": true}
+	_sync_vision_environment()
 	redraw.emit()
 
 func _record_environment_candidate(candidates: Dictionary, position: Vector2i, effect: Dictionary) -> void:
@@ -2009,13 +2094,14 @@ func _step_environment(effect_types: Array[String]) -> void:
 		var existing: Dictionary = next_state.get(position, {})
 		if existing.is_empty() or _environment_concentration(candidate) > _environment_concentration(existing):
 			if _environment_kind(existing) == "fire" and _environment_kind(candidate) != "fire" and bool(existing.get("burns_terrain", false)):
-				grid[position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
+				_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.ASHES))
 			next_state[position] = candidate
 	for position: Vector2i in extinguished_fire:
 		var final_effect: Dictionary = next_state.get(position, {})
 		if _environment_kind(final_effect) != "fire" and bool(extinguished_fire[position]):
-			grid[position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
+			_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.ASHES))
 	environment = next_state
+	_sync_vision_environment()
 
 func _process_creature_respawn() -> void:
 	if not _creature_population_initialized:
@@ -2040,12 +2126,21 @@ func _advance_environment_time(target_time: int) -> void:
 	if target_time < environment_time:
 		return
 	# Timer effect: decrement timer and call effect_timed when it runs out
-	for position in grid:
-		var terrain: TerrainData.Terrain = grid[position]
-		if terrain.timer >= 0:
-			terrain.timer -= target_time - environment_time
-			if terrain.timer <= 0 and terrain.effect_timed.is_valid():
-				terrain.effect_timed.call(grid, environment, position)
+	for position: Vector2i in _timed_terrain_positions.keys():
+		var terrain: TerrainData.Terrain = grid.get(position)
+		# Drop entries whose tile was replaced and no longer runs a timer.
+		if terrain == null or terrain.timer < 0:
+			_timed_terrain_positions.erase(position)
+			continue
+		terrain.timer -= target_time - environment_time
+		if terrain.timer <= 0 and terrain.effect_timed.is_valid():
+			terrain.effect_timed.call(grid, environment, position)
+			# Timer effects rewrite terrain and environment directly, so resync vision state.
+			if grid[position].occluding != terrain.occluding:
+				_next_vision_epoch()
+			_sync_vision_environment()
+			if grid[position].timer < 0:
+				_timed_terrain_positions.erase(position)
 	while true:
 		var next_time: int = INT64_MAX
 		for tick_time: int in environment_next_tick.values():
@@ -2166,6 +2261,7 @@ func _extinguish_entity_on_cold_terrain(entity: Creature, position: Vector2i) ->
 		else:
 			fire_effect["concentration"] = _environment_concentration(fire_effect) - 1
 			environment[fire_position] = fire_effect
+	_sync_vision_environment()
 	redraw.emit()
 
 func _apply_burning_to_entity(entity: Creature) -> void:
@@ -2178,11 +2274,11 @@ func _apply_burning_to_entity(entity: Creature) -> void:
 			set_environment_effect(entity_position, "steam", 50)
 			return
 		TerrainData.Flammability.EXTINGUISH_MELT_TO_FLOOR:
-			grid[entity_position] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+			_set_tile(entity_position, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 			_extinguish_entity_on_cold_terrain(entity, entity_position)
 			return
 		TerrainData.Flammability.EXTINGUISH_MELT_TO_WATER:
-			grid[entity_position] = TerrainData.get_terrain(TerrainData.TileType.WATER_SHALLOW)
+			_set_tile(entity_position, TerrainData.get_terrain(TerrainData.TileType.WATER_SHALLOW))
 			_extinguish_entity_on_cold_terrain(entity, entity_position)
 			return
 	if StatusData.has_status(entity, "Wet"):  
@@ -2199,6 +2295,8 @@ func _apply_burning_to_entity(entity: Creature) -> void:
 	entity.status = statuses
 
 func _finish_entity_turn(entity: Creature) -> void:
+	if entity is PlayerCreature and entity.status:
+		redraw_status.emit()
 	var player_was_weakened: bool = entity is PlayerCreature and StatusData.has_status(entity, "Weakened")
 	StatusData.finish_turn(entity, _status_context())
 	if player_was_weakened and not StatusData.has_status(entity, "Weakened"):
@@ -2787,24 +2885,26 @@ func _creature_move_toward(entity: Creature, goal: Vector2i) -> int:
 			if approach_position == entity.pos or creature.has(approach_position) or not _creature_can_reach_any_known_tile(entity, approach_position):
 				continue
 			approach_positions.append(approach_position)
+		# One search covers every approach tile: a Dijkstra tree's pointers for a settled tile
+		# are the same as a dedicated search to that tile would produce.
+		var approach_tree: Dictionary = _creature_path_to_any(approach_positions, entity)
 		var best_path_steps: int = 2147483647
 		for approach_position: Vector2i in approach_positions:
-			var candidate_path: Dictionary = dijkstra(entity, true, true, approach_position, 0.0, false)
-			if not candidate_path.has(approach_position):
+			if not approach_tree.has(approach_position):
 				continue
 			var path_steps: int = 0
 			var path_cursor: Vector2i = approach_position
-			while candidate_path.has(path_cursor) and candidate_path[path_cursor] != entity.pos and path_steps < MAP_W * MAP_H:
-				path_cursor = candidate_path[path_cursor]
+			while approach_tree.has(path_cursor) and approach_tree[path_cursor] != entity.pos and path_steps < MAP_W * MAP_H:
+				path_cursor = approach_tree[path_cursor]
 				path_steps += 1
-			if path_steps >= MAP_W * MAP_H or not candidate_path.has(path_cursor):
+			if path_steps >= MAP_W * MAP_H or not approach_tree.has(path_cursor):
 				continue
 			if path_steps < best_path_steps:
 				best_path_steps = path_steps
 				path_goal = approach_position
-				path = candidate_path
+				path = approach_tree
 	else:
-		path = dijkstra(entity, true, true, goal, 0.0, false)
+		path = _creature_path_to(goal, entity)
 	if path.has(path_goal):
 		var route_position: Vector2i = path_goal
 		var path_guard: int = 0
@@ -3096,8 +3196,9 @@ func _act_unaware_creature(entity: Creature) -> int:
 	if behavior == "urinate":
 		entity.behavior_turns_left -= 1
 		if grid[entity.pos].terrain_name == "cave floor":
-			grid[entity.pos] = TerrainData.get_terrain(TerrainData.TileType.PUDDLE)
+			_set_tile(entity.pos, TerrainData.get_terrain(TerrainData.TileType.PUDDLE))
 			grid[entity.pos].timer = 4000
+			_timed_terrain_positions[entity.pos] = true
 		if int(entity.behavior_turns_left) <= 0:
 			entity.behavior_mode = ""
 		return _move_creature(entity, Vector2i.ZERO)
@@ -4198,6 +4299,80 @@ func _player_path_to(target: Vector2i) -> Dictionary:
 				_path_heap_push(frontier, {"pos": next_pos, "distance": next_distance})
 	return {}
 
+func _creature_path_to(target: Vector2i, source: Creature) -> Dictionary:
+	# Adapted from _player_path_to for creature-specific pathfinding
+	if target == source.pos:
+		return {source.pos: Vector2i(-1, -1)}
+	return _creature_search(source, [target])
+
+## Searches once from the source and returns the shared previous-pointer tree once every
+## reachable target has been settled. Targets that are unreachable simply have no entry in the tree.
+func _creature_path_to_any(targets: Array[Vector2i], source: Creature) -> Dictionary:
+	return _creature_search(source, targets)
+
+## Shared Dijkstra core. Stops as soon as all targets are settled, or the frontier empties.
+## Occupied tiles are never entered, so an occupied target can never be settled; such targets fail
+## immediately rather than sweeping the whole reachable region.
+func _creature_search(source: Creature, targets: Array[Vector2i]) -> Dictionary:
+	var unsettled: Dictionary[Vector2i, bool] = {}
+	for target: Vector2i in targets:
+		if target == source.pos:
+			continue
+		if visible_tiles.has(target) and creature.has(target):
+			continue
+		# The search never enters a tile that is impassable or hazardous for this creature,
+		# so such a target can never be settled. Reject it now instead of sweeping the region.
+		var target_tile: TerrainData.Terrain = _path_tile_type(target, source, true)
+		if not target_tile.passable or _is_hazardous_for_creature(source, target_tile):
+			continue
+		unsettled[target] = true
+	var distance: Dictionary = {source.pos: 0.0}
+	var previous: Dictionary = {}
+	var frontier: Array[Dictionary] = []
+	_path_heap_push(frontier, {"pos": source.pos, "distance": 0.0})
+	var directions: Array[Vector2i] = [Vector2i.UP, Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i(1, 1), Vector2i(1, -1), Vector2i(-1, 1), Vector2i(-1, -1)]
+	var settled: Dictionary[Vector2i, bool] = {}
+	while not frontier.is_empty():
+		var entry: Dictionary = _path_heap_pop(frontier)
+		var pos: Vector2i = entry.get("pos", source.pos)
+		var current_distance: float = entry.get("distance", 0.0)
+		if current_distance > distance[pos]:
+			continue
+		if settled.has(pos):
+			continue
+		settled[pos] = true
+		unsettled.erase(pos)
+		if unsettled.is_empty():
+			return previous
+		for direction in directions:
+			var next_pos: Vector2i = pos + direction
+			if not is_in_view(next_pos.x, next_pos.y) or not seen_tiles.has(next_pos):
+				continue
+			var next_tile: TerrainData.Terrain = _path_tile_type(next_pos, source, true)
+			if not next_tile.passable:
+				continue
+			# Creature-specific hazard exclusion (Flying ignores lava, Amphibious/Aquatic ignores deep water)
+			if _is_hazardous_for_creature(source, next_tile):
+				continue
+			if visible_tiles.has(next_pos) and creature.has(next_pos) and next_pos != source.pos:
+				continue
+			var diagonal: bool = direction.x != 0 and direction.y != 0
+			if diagonal:
+				var side_x: Vector2i = Vector2i(next_pos.x, pos.y)
+				var side_y: Vector2i = Vector2i(pos.x, next_pos.y)
+				if not is_in_view(side_x.x, side_x.y) or not is_in_view(side_y.x, side_y.y) or not seen_tiles.has(side_x) or not seen_tiles.has(side_y):
+					continue
+				if not _path_tile_type(side_x, source, true).passable and not _path_tile_type(side_y, source, true).passable:
+					continue
+			var next_distance: float = current_distance + (1.5 if diagonal else 1.0) * next_tile.move_cost
+			if not distance.has(next_pos) or next_distance < float(distance[next_pos]):
+				distance[next_pos] = next_distance
+				previous[next_pos] = pos
+				_path_heap_push(frontier, {"pos": next_pos, "distance": next_distance})
+	# Some targets may be valid but unreachable. Return the settled tree so callers can still use
+	# whichever targets were reached; an unreached target simply has no entry.
+	return previous
+
 ## Posts a message to the game log. Storage and display live in the MessageLog node.
 func _append_message(message: String) -> void:
 	message_posted.emit(message)
@@ -4931,7 +5106,7 @@ func move_player(dx: int, dy: int, cost: int, from_auto_walk: bool = false) -> b
 			var run_root: Map = _run_root if _run_root != null else self
 			run_root.lyrical_orblet_found = true
 			if run_root.stairs_up_pos.x >= 0 and run_root.stairs_up_pos.y >= 0:
-				run_root.grid[run_root.stairs_up_pos] = TerrainData.get_terrain(TerrainData.TileType.STAIRS_UP)
+				run_root._set_tile(run_root.stairs_up_pos, TerrainData.get_terrain(TerrainData.TileType.STAIRS_UP))
 			_play_sound("orblet")
 			_append_message("The Lyrical Orblet starts floating alongside you. You will now be able to climb back up to the outside world.")
 		elif not _activate_altar_at(target) and inventory.size() < MAX_INVENTORY:
@@ -5355,8 +5530,9 @@ func _extinguish_fire_at(position: Vector2i) -> void:
 	if _environment_kind(fire_effect) != "fire":
 		return
 	if bool(fire_effect.get("burns_terrain", false)):
-		grid[position] = TerrainData.get_terrain(TerrainData.TileType.ASHES)
+		_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.ASHES))
 	environment.erase(position)
+	_sync_vision_environment()
 
 func _apply_seed_grenade_terrain(position: Vector2i, center: Vector2i, concentration: int, _enchantment: int) -> void:
 	if position.x < 0 or position.x >= MAP_W or position.y < 0 or position.y >= MAP_H:
@@ -5371,9 +5547,9 @@ func _apply_seed_grenade_terrain(position: Vector2i, center: Vector2i, concentra
 		return
 	var in_shrub_zone: bool = maxi(absi(center.x - position.x), absi(center.y - position.y)) <= 1
 	if in_shrub_zone and adjusted_concentration >= 3:
-		grid[position] = TerrainData.get_terrain(TerrainData.TileType.SHRUB)
+		_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.SHRUB))
 	else:
-		grid[position] = TerrainData.get_terrain(TerrainData.TileType.MOSS)
+		_set_tile(position, TerrainData.get_terrain(TerrainData.TileType.MOSS))
 
 func _apply_noise_grenade(_center: Vector2i, _radius: int, concentration: int, blast_position: Vector2i) -> void:
 	if not creature.has(blast_position):
@@ -5486,9 +5662,9 @@ func _throw_selected_item_at(target: Vector2i) -> void:
 				"frost":
 					_extinguish_fire_at(blast_position)
 					if terrain.terrain_name == "puddle of urine":
-						grid[blast_position] = TerrainData.get_terrain(TerrainData.TileType.SNOW)
+						_set_tile(blast_position, TerrainData.get_terrain(TerrainData.TileType.SNOW))
 					elif terrain.terrain_name == "shallow lake":
-						grid[blast_position] = TerrainData.get_terrain(TerrainData.TileType.ICE)
+						_set_tile(blast_position, TerrainData.get_terrain(TerrainData.TileType.ICE))
 					if creature.has(blast_position):
 						var frost_target: Creature = creature[blast_position]
 						_deal_damage(frost_target, concentration, "cold")
@@ -5504,7 +5680,7 @@ func _throw_selected_item_at(target: Vector2i) -> void:
 								_heal_entity(healing_target, healing_amount)
 				"shattering":
 					if terrain.terrain_name == "cave wall":
-						grid[blast_position] = TerrainData.get_terrain(TerrainData.TileType.FLOOR)
+						_set_tile(blast_position, TerrainData.get_terrain(TerrainData.TileType.FLOOR))
 						if not floor_tiles.has(blast_position):
 							floor_tiles.append(blast_position)
 				"holy":

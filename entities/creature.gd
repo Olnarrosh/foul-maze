@@ -1,6 +1,5 @@
 @abstract
 class_name Creature
-extends Node
 
 var creature_name: String
 var glyph: String
@@ -23,6 +22,9 @@ var traits: Array[String]
 var attack_str: Array[String]
 var status: Array[StatusData.Status]
 var visible_tiles: Dictionary[Vector2i, bool]
+## Cached field of view and the inputs it was computed from: (pos.x, pos.y, sight_range, vision epoch).
+var fov_cache: Dictionary[Vector2i, bool] = {}
+var fov_cache_key: Vector4i = Vector4i(-1, -1, -1, -1)
 var resistances: Array[String]
 var environment_checked_time: float = -1.0
 var sleeping_regen: bool = false

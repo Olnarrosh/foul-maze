@@ -1,6 +1,5 @@
 @abstract
 class_name Item
-extends Node
 
 # Base class for all items in the game.
 # Items can be weapons, armors, wands, charms, grenades, or projectiles.

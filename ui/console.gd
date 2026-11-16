@@ -707,9 +707,9 @@ func _on_map_changed(next_map: Map) -> void:
 	if map != null and map.redraw.is_connected(queue_redraw):
 		map.redraw.disconnect(queue_redraw)
 	if map != null and map.redraw_status.is_connected(status_panel.queue_redraw):
-		map.redraw.disconnect(status_panel.queue_redraw)
+		map.redraw_status.disconnect(status_panel.queue_redraw)
 	if map != null and map.inspect_changed.is_connected(_on_inspect):
-		map.redraw.disconnect(_on_inspect)
+		map.inspect_changed.disconnect(_on_inspect)
 	if map != null and map.map_changed.is_connected(_on_map_changed):
 		map.map_changed.disconnect(_on_map_changed)
 	map = next_map
