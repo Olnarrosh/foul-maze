@@ -98,6 +98,9 @@ const TUTORIAL_MESSAGES: Dictionary = {
 }
 const PROJECTILE_BASE_DAMAGE: int = 1
 const UNARMED_ATTACK_WORDS: Array[String] = ["punch", "kick", "beat", "slap", "fisticuff", "wrestle", "box", "slug", "clock", "knuckle", "sock"]
+## Squared distance (in tiles) between two creatures of the same type that places them
+## within the same cluster.
+const CLUSTER_SQUARED_DISTANCE: int = 25
 
 var map_above: Map
 var map_below: Map
@@ -1578,23 +1581,59 @@ func _spawn_creature_definition(definition: Dictionary, spawn_time: float, add_t
 	if spawn_tiles.is_empty():
 		return null
 	var cluster_size: int = maxi(0, definition.get("cluster", 0))
-	var matching_positions: Array[Vector2i] = []
-	var creature_name: String = definition.get("name", "")
+	var creature_glyph: String = definition.get("char", "")
+	var conspecific_positions: Array[Vector2i] = []
 	for existing_position: Vector2i in creature.keys():
 		var existing: Creature = creature[existing_position]
-		if existing.creature_name == creature_name and existing.health > 0:
-			matching_positions.append(existing_position)
-	if cluster_size > matching_positions.size() and not matching_positions.is_empty():
-		var nearby_tiles: Array[Vector2i] = []
-		for spawn_position: Vector2i in spawn_tiles:
-			for conspecific_position: Vector2i in matching_positions:
-				if spawn_position.distance_squared_to(conspecific_position) <= 36:
-					nearby_tiles.append(spawn_position)
-					break
-		if not nearby_tiles.is_empty():
-			spawn_tiles = nearby_tiles
-	var spawn_position: Vector2i = _choose_spawn_position(spawn_tiles)
+		if existing.glyph == creature_glyph and existing.health > 0:
+			conspecific_positions.append(existing_position)
+	var spawn_position: Vector2i = _choose_spawn_position(_cluster_spawn_tiles(conspecific_positions, cluster_size, spawn_tiles))
 	return _create_creature_at_position(definition, spawn_position, spawn_time, add_to_turn_queue)
+
+## Returns the spawn tiles that place a new creature into the first living conspecific
+## cluster with room for it, or every spawn tile when no conspecific cluster applies.
+func _cluster_spawn_tiles(conspecific_positions: Array[Vector2i], cluster_size: int, spawn_tiles: Array[Vector2i]) -> Array[Vector2i]:
+	if cluster_size <= 0 or conspecific_positions.is_empty():
+		return spawn_tiles
+	for cluster: Array in _group_conspecifics(conspecific_positions):
+		if cluster.size() >= cluster_size:
+			continue
+		var cluster_spawn_tiles: Array[Vector2i] = []
+		for spawn_position: Vector2i in spawn_tiles:
+			if _is_within_cluster_distance(spawn_position, cluster):
+				cluster_spawn_tiles.append(spawn_position)
+		if not cluster_spawn_tiles.is_empty():
+			return cluster_spawn_tiles
+	return spawn_tiles
+
+## Groups living conspecific positions into clusters: every creature within clustering
+## distance of another belongs to the same cluster.
+func _group_conspecifics(positions: Array[Vector2i]) -> Array:
+	var clusters: Array = []
+	var clustered: Dictionary[Vector2i, bool] = {}
+	for position: Vector2i in positions:
+		if clustered.has(position):
+			continue
+		var cluster: Array = [position]
+		clustered[position] = true
+		var member_index: int = 0
+		while member_index < cluster.size():
+			var cluster_member: Vector2i = cluster[member_index]
+			member_index += 1
+			for other_position: Vector2i in positions:
+				if clustered.has(other_position):
+					continue
+				if cluster_member.distance_squared_to(other_position) <= CLUSTER_SQUARED_DISTANCE:
+					cluster.append(other_position)
+					clustered[other_position] = true
+		clusters.append(cluster)
+	return clusters
+
+func _is_within_cluster_distance(spawn_position: Vector2i, cluster: Array) -> bool:
+	for cluster_position: Vector2i in cluster:
+		if spawn_position.distance_squared_to(cluster_position) <= CLUSTER_SQUARED_DISTANCE:
+			return true
+	return false
 
 func _initialize_creature_population() -> void:
 	if _creature_population_initialized:
